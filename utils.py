@@ -23,43 +23,48 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
     """
 
     if isinstance(torch_module, torch.nn.Conv1d):
-        assert isinstance(nnx_module, nnx.Conv), f"nnx_module must be a Conv, got {type(nnx_module)}"
+        if not isinstance(nnx_module, nnx.Conv):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a Conv")
 
         # Torch kernel shape: (out_channels, in_channels/groups, kernel_size)
         # Flax kernel shape: (kernel_size, in_channels/groups, out_channels)
 
         weight_p = torch_module.weight.permute(2, 1, 0)
-        assert weight_p.shape == nnx_module.kernel.shape, f"weight_p shape: {weight_p.shape} must match nnx_module.kernel shape: {nnx_module.kernel.shape}"
+        if weight_p.shape != nnx_module.kernel.shape:
+            raise ValueError(f"Attempted to convert torch module with weight shape {weight_p.shape} to nnx_module with kernel shape {nnx_module.kernel.shape}")
 
         nnx_module.kernel = tensor_to_param(weight_p)
         if torch_module.bias is not None:
-            assert torch_module.bias.shape == nnx_module.bias.shape, f"torch_module.bias shape: {torch_module.bias.shape} must match nnx_module.bias shape: {nnx_module.bias.shape}"
+            if torch_module.bias.shape != nnx_module.bias.shape:
+                raise ValueError(f"Attempted to convert torch module with bias shape {torch_module.bias.shape} to nnx_module with bias shape {nnx_module.bias.shape}")
             nnx_module.bias = tensor_to_param(torch_module.bias)
 
         return nnx_module
 
     if isinstance(torch_module, torch.nn.Conv2d):
-        assert isinstance(nnx_module, nnx.Conv), f"nnx_module must be a Conv, got {type(nnx_module)}"
-
-        # Torch kernel shape: (out_channels, in_channels/groups, kernel_size, kernel_size)
-        # Flax kernel shape: (kernel_size, kernel_size, in_channels/groups, out_channels)
+        if not isinstance(nnx_module, nnx.Conv):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a Conv")
 
         weight_p = torch_module.weight.permute(2, 3, 1, 0)
-        assert weight_p.shape == nnx_module.kernel.shape, f"weight_p shape: {weight_p.shape} must match nnx_module.kernel shape: {nnx_module.kernel.shape}"
+        if weight_p.shape != nnx_module.kernel.shape:
+            raise ValueError(f"Attempted to convert torch module with weight shape {weight_p.shape} to nnx_module with kernel shape {nnx_module.kernel.shape}")
 
         nnx_module.kernel = tensor_to_param(weight_p)
         if torch_module.bias is not None:
-            assert torch_module.bias.shape == nnx_module.bias.shape, f"torch_module.bias shape: {torch_module.bias.shape} must match nnx_module.bias shape: {nnx_module.bias.shape}"
+            if torch_module.bias.shape != nnx_module.bias.shape:
+                raise ValueError(f"Attempted to convert torch module with bias shape {torch_module.bias.shape} to nnx_module with bias shape {nnx_module.bias.shape}")
             nnx_module.bias = tensor_to_param(torch_module.bias)
 
         return nnx_module
 
     if isinstance(torch_module, torch.nn.Identity):
-        assert isinstance(nnx_module, Identity), f"nnx_module must be a Identity, got {type(nnx_module)}"
+        if not isinstance(nnx_module, Identity):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a Identity")
         return nnx_module
     
     if isinstance(torch_module, _LocalState):
-        assert isinstance(nnx_module, LocalState), f"nnx_module must be a LocalState, got {type(nnx_module)}"
+        if not isinstance(nnx_module, LocalState):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a LocalState")
 
         nnx_module.content = copy_torch_params(torch_module.content, nnx_module.content)
         nnx_module.query = copy_torch_params(torch_module.query, nnx_module.query)
@@ -70,10 +75,12 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         return nnx_module
 
     if isinstance(torch_module, torch.nn.Linear):
-        assert isinstance(nnx_module, nnx.Linear), "nnx_module must be a Linear"
+        if not isinstance(nnx_module, nnx.Linear):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a Linear")
 
         weight_t = torch_module.weight.transpose(0, 1)
-        assert weight_t.shape == nnx_module.kernel.shape, f"weight_t shape: {weight_t.shape} must match nnx_module.kernel shape: {nnx_module.kernel.shape}"
+        if weight_t.shape != nnx_module.kernel.shape:
+            raise ValueError(f"Attempted to convert torch module with weight shape {weight_t.shape} to nnx_module with kernel shape {nnx_module.kernel.shape}")
 
         nnx_module.kernel = tensor_to_param(weight_t)
         if torch_module.bias is not None:
@@ -82,7 +89,8 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         return nnx_module
 
     if isinstance(torch_module, torch.nn.LSTM):
-        assert isinstance(nnx_module, BidirectionalLSTM), "nnx_module must be a BidirectionalLSTM"
+        if not isinstance(nnx_module, BidirectionalLSTM):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a BidirectionalLSTM")
         if not torch_module.bidirectional:
             raise ValueError("Only bidirectional LSTM is supported")
 
@@ -91,7 +99,8 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         return nnx_module
 
     if isinstance(torch_module, _BLSTM):
-        assert isinstance(nnx_module, BLSTM), f"nnx_module must be a BLSTM, got {type(nnx_module)}"
+        if not isinstance(nnx_module, BLSTM):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a BLSTM")
 
         nnx_module.lstm = copy_torch_params(torch_module.lstm, nnx_module.lstm)
         nnx_module.linear = copy_torch_params(torch_module.linear, nnx_module.linear)
@@ -99,11 +108,10 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         return nnx_module
 
     if isinstance(torch_module, _DConv):
-        # TODO! Tänk på att vi lägger till attention eller lstm beroende på config,
-        # så måste parsea detta
-
-        assert isinstance(nnx_module, DConv), "nnx_module must be a DConv, got {type(nnx_module)}"
-        assert len(torch_module.layers) == len(nnx_module.layers), "torch_module and nnx_module must have the same number of layers"
+        if not isinstance(nnx_module, DConv):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a DConv")
+        if len(torch_module.layers) != len(nnx_module.layers):
+            raise ValueError(f"Attempted to convert torch module with {len(torch_module.layers)} layers to nnx_module with {len(nnx_module.layers)} layers")
 
         layers = []
         for torch_layer, nnx_layer in zip(torch_module.layers, nnx_module.layers):
@@ -114,8 +122,8 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         return nnx_module
 
     if isinstance(torch_module, torch.nn.Sequential):
-        # assert isinstance(nnx_module, nnx.Sequential), f"nnx_module must be a Sequential, got {type(nnx_module)}"
-        assert isinstance(nnx_module, list), f"nnx_module must be a list, got {type(nnx_module)}"
+        if not isinstance(nnx_module, list):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a list")
 
         layers = []
         for torch_layer, nnx_layer in zip(torch_module, nnx_module):
@@ -126,7 +134,8 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         return nnx_module
 
     if isinstance(torch_module, torch.nn.GroupNorm):
-        assert isinstance(nnx_module, nnx.GroupNorm), "nnx_module must be a GroupNorm"
+        if not isinstance(nnx_module, nnx.GroupNorm):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a GroupNorm")
 
         nnx_module.scale = tensor_to_param(torch_module.weight)
         nnx_module.bias = tensor_to_param(torch_module.bias)
@@ -142,14 +151,16 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         return nnx_module
 
     if isinstance(torch_module, _LayerScale):
-        assert isinstance(nnx_module, LayerScale), "nnx_module must be a LayerScale"
+        if not isinstance(nnx_module, LayerScale):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a LayerScale")
 
         nnx_module.scale = tensor_to_param(torch_module.scale)
 
         return nnx_module
 
     if isinstance(torch_module, _HEncLayer):
-        assert isinstance(nnx_module, HybridEncoderLayer), "nnx_module must be a HybridEncoderLayer"
+        if not isinstance(nnx_module, HybridEncoderLayer):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a HybridEncoderLayer")
 
         nnx_module.conv = copy_torch_params(torch_module.conv, nnx_module.conv)
         nnx_module.norm1 = copy_torch_params(torch_module.norm1, nnx_module.norm1)

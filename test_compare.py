@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 @pytest.fixture
 def torch_model():
 
-    state_dict_path = "../../services/source-separation/models/hdemucs_high_trained.pt"
+    state_dict_path = "models/hdemucs_high_trained.pt"
 
     sources = ["drums", "bass", "other", "vocals"]
     model = HDemucs(sources=sources, nfft=4096, depth=6)
@@ -249,7 +249,14 @@ def test_dconv(torch_model: HDemucs, layer_idx: int):
 
 
 
-@pytest.mark.parametrize("layer_idx, shape", [(0, (1, 4, 2048, 1)), (4, (2, 768, 3, 3))])
+@pytest.mark.parametrize(
+    "layer_idx, shape",
+    [
+        (0, (1, 4, 2048, 1)),
+        (1, (1, 48, 512, 1)),
+        (4, (1, 384, 8, 1)),
+    ]
+)
 def test_freq_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
     torch_henc_layer = torch_model.freq_encoder[layer_idx]
 
@@ -263,17 +270,41 @@ def test_freq_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
         y = torch_henc_layer(x)
 
     # flax
-    # TODO: Make sure the module config are the same (right now getting group norm where there should be identity)
+    param_map = {
+        0: {
+            "in_channels": 4,
+            "out_channels": 48,
+            "kernel_size": 8,
+            "norm_groups": 4,
+            "norm_type": "identity",
+            "pad": True,
+        },
+        1: {
+            "in_channels": 48,
+            "out_channels": 96,
+            "kernel_size": 8,
+            "norm_groups": 4,
+            "norm_type": "identity",
+            "pad": True,
+        },
+        4: {
+            "in_channels": 384,
+            "out_channels": 768,
+            "kernel_size": 8,
+            "norm_groups": 4,
+            "norm_type": "group_norm",
+            "dconv_kw": {
+                "lstm": True,
+                "attn": True,
+            },
+            "pad": False,
+        }
+    }
+
     nnx_henc_layer = HybridEncoderLayer(
-        in_channels=4,
-        out_channels=48,
-        kernel_size=8,
-        norm_groups=4,
+        **param_map[layer_idx],
         empty=False,
         freq=True,
-        norm_type="identity",
-        dconv_kw=None,
-        pad=True,
         rngs=nnx.Rngs(0))
 
     nnx_henc_layer = copy_torch_params(torch_henc_layer, nnx_henc_layer)
@@ -291,7 +322,13 @@ def add_print_hook(module: torch.nn.Module):
     def hook_fn(module, input, output):
         if isinstance(input, tuple):  # input is always a tuple
             print(f"{name}, {module.__class__.__name__} input shape:\t {input[0].shape}, norm: {jnp.linalg.norm(input[0].detach().numpy())}")
-        print(f"{name}, {module.__class__.__name__} output shape:\t {output.shape}, norm: {jnp.linalg.norm(output.detach().numpy())}")
+        else:
+            print(f"{name}, {module.__class__.__name__} input shape:\t {input.shape}, norm: {jnp.linalg.norm(input.detach().numpy())}")
+
+        if isinstance(output, tuple):
+            print(f"{name}, {module.__class__.__name__} output shape:\t {output[0].shape}, norm: {jnp.linalg.norm(output[0].detach().numpy())}")
+        else:
+            print(f"{name}, {module.__class__.__name__} output shape:\t {output.shape}, norm: {jnp.linalg.norm(output.detach().numpy())}")
 
     for name, module in module.named_modules():
         if len(list(module.children())) == 0:

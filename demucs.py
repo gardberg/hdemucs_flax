@@ -241,11 +241,23 @@ class TorchConv2d(nnx.Conv):
 class TorchGroupNorm(nnx.GroupNorm):
     def __call__(self, x: Array) -> Array:
         """
-        x: shape (batch_size, channels, *)
-        (nnx groupnorm takes (batch_size, *, channels))
+        x: shape (batch_size, channels, *) - PyTorch convention
+        (nnx groupnorm expects (batch_size, *, channels) - Flax convention)
         returns: shape (batch_size, channels, *)
+        
+        Works for inputs with any number of dimensions >= 3
         """
-        return super().__call__(x.transpose(0, 2, 1)).transpose(0, 2, 1)
+        # Move channels from dim 1 to the last dimension
+        ndim = x.ndim
+        perm = [0] + list(range(2, ndim)) + [1]
+        x_flax = x.transpose(*perm)
+        
+        # Apply GroupNorm
+        out_flax = super().__call__(x_flax)
+        
+        # Move channels back from last dimension to dim 1
+        perm_back = [0, ndim-1] + list(range(1, ndim-1))
+        return out_flax.transpose(*perm_back)
 
 class DConv(nnx.Module):
     def __init__(

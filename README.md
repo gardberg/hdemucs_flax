@@ -25,6 +25,12 @@ https://flax-linen.readthedocs.io/en/latest/guides/converting_and_upgrading/conv
 - time_decoder: 5x _HDecLayer
 - freq_emb    : 1x _ScaledEmbedding
 
+Using HDemucs high (44.1 - 48 kHz)
+
+nfft: 4096
+depth = 6
+
+Rest default params
 
 ![HDemucs Architecture](./images/arch.png)
 
