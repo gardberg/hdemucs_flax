@@ -1,4 +1,3 @@
-from optax import AddDecayedWeightsState
 import pytest
 from torchaudio.models import HDemucs
 import torch
@@ -7,7 +6,8 @@ from flax import nnx
 import logging
 
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, TorchConv, HybridEncoderLayer
-from utils import torch_module_to_params, copy_torch_params
+from utils import copy_torch_params
+from conv import TransposedConv1d
 
 torch.manual_seed(0)
 
@@ -105,7 +105,7 @@ def test_scaled_embedding(torch_model: HDemucs):
     # flax
     nnx_scaled_embedding = ScaledEmbedding(512, 48, scale=1.0, rngs=nnx.Rngs(0))
 
-    nnx_scaled_embedding.embedding.embedding = torch_module_to_params(torch_scaled_embedding)
+    nnx_scaled_embedding = copy_torch_params(torch_scaled_embedding, nnx_scaled_embedding)
 
     nnx_y = nnx_scaled_embedding(x.detach().numpy())
 
@@ -124,7 +124,7 @@ def test_layer_scale(torch_model: HDemucs):
 
     # flax
     nnx_layer_scale = LayerScale(48, init=0.0)
-    nnx_layer_scale.scale = torch_module_to_params(torch_layer_scale)
+    nnx_layer_scale = copy_torch_params(torch_layer_scale, nnx_layer_scale)
 
     nnx_y = nnx_layer_scale(x.detach().numpy())
 
@@ -255,6 +255,7 @@ def test_dconv(torch_model: HDemucs, layer_idx: int):
         (0, (1, 4, 2048, 1)),
         (1, (1, 48, 512, 1)),
         (4, (1, 384, 8, 1)),
+        (5, (1, 768, 1, 1)),  # Last freq encoder layer
     ]
 )
 def test_freq_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
@@ -278,6 +279,7 @@ def test_freq_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
             "norm_groups": 4,
             "norm_type": "identity",
             "pad": True,
+            "freq": True,
         },
         1: {
             "in_channels": 48,
@@ -286,6 +288,7 @@ def test_freq_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
             "norm_groups": 4,
             "norm_type": "identity",
             "pad": True,
+            "freq": True,
         },
         4: {
             "in_channels": 384,
@@ -298,13 +301,27 @@ def test_freq_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
                 "attn": True,
             },
             "pad": False,
+            "freq": True,
+        },
+        5: {
+            "in_channels": 768,
+            "out_channels": 1536,
+            "kernel_size": 4,
+            "stride": 2,
+            "norm_groups": 4,
+            "norm_type": "group_norm",
+            "dconv_kw": {
+                "lstm": True,
+                "attn": True,
+            },
+            "pad": True,
+            "freq": False, # last layer to merge with time brach?
         }
     }
 
     nnx_henc_layer = HybridEncoderLayer(
         **param_map[layer_idx],
         empty=False,
-        freq=True,
         rngs=nnx.Rngs(0))
 
     nnx_henc_layer = copy_torch_params(torch_henc_layer, nnx_henc_layer)
@@ -316,6 +333,154 @@ def test_freq_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
     logger.info(f"Freq HEnc Layer (layer {layer_idx}) diff: {diff}")
     assert jnp.allclose(y.detach().numpy(), nnx_y, atol=TOL), f"l2 norm: {diff}"
 
+    
+@pytest.mark.parametrize(
+    "layer_idx, shape",
+    [
+        (0, (1, 2, 8)),  # First time encoder layer
+        (1, (1, 48, 2)),  # Second time encoder layer
+        (3, (1, 192, 8)),  # Fourth time encoder layer
+        (4, (1, 384, 2)),  # Fifth time encoder layer (empty layer)
+    ]
+)
+def test_time_enc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
+    torch_henc_layer = torch_model.time_encoder[layer_idx]
+
+    # add_print_hook(torch_henc_layer)
+
+    B, C, T = shape # (batch_size, channels, time_steps)
+    x = torch.randn(B, C, T)
+
+    with torch.no_grad():
+        y = torch_henc_layer(x)
+
+    # flax
+    param_map = {
+        0: {
+            "in_channels": 2,  # audio_channels
+            "out_channels": 48,
+            "kernel_size": 8,
+            "stride": 4,
+            "norm_groups": 4,
+            "norm_type": "identity",
+            "pad": True,
+            "freq": False,  # time encoder
+        },
+        1: {
+            "in_channels": 48,
+            "out_channels": 96,
+            "kernel_size": 8,
+            "stride": 4,
+            "norm_groups": 4,
+            "norm_type": "identity",
+            "pad": True,
+            "freq": False,  # time encoder
+        },
+        3: {
+            "in_channels": 192,
+            "out_channels": 384,
+            "kernel_size": 8,
+            "stride": 4,
+            "norm_groups": 4,
+            "norm_type": "identity",
+            "pad": True,
+            "freq": False,  # time encoder
+        },
+        4: {
+            "in_channels": 384,
+            "out_channels": 768,
+            "kernel_size": 8,
+            "stride": 4,
+            "norm_groups": 4,
+            "norm_type": "group_norm",
+            "pad": True,
+            "freq": False,  # time encoder
+            "empty": True,  # This is an empty layer (no dconv, no rewrite)
+        }
+    }
+
+    nnx_henc_layer = HybridEncoderLayer(
+        **param_map[layer_idx],
+        rngs=nnx.Rngs(0))
+
+    nnx_henc_layer = copy_torch_params(torch_henc_layer, nnx_henc_layer)
+    nnx_y = nnx_henc_layer(x.detach().numpy())
+
+    assert y.shape == nnx_y.shape, f"y shape: {y.shape} must match nnx_y shape: {nnx_y.shape}"
+
+    diff = jnp.linalg.norm(y.detach().numpy() - nnx_y)
+    logger.info(f"Time HEnc Layer (layer {layer_idx}) diff: {diff}")
+    assert jnp.allclose(y.detach().numpy(), nnx_y, atol=TOL), f"l2 norm: {diff}"
+
+
+@pytest.mark.parametrize(
+    "in_channels, out_channels, kernel_size, stride, padding, output_padding, dilation, input_shape",
+    [
+        # Basic case (original test)
+        (12, 48, 8, 4, 0, 0, 1, (1, 12, 10)),
+        
+        # Different channel configurations
+        (24, 12, 5, 2, 1, 0, 1, (2, 24, 15)),
+        
+        # Test with output padding
+        (16, 32, 4, 2, 2, 1, 1, (1, 16, 8)),
+        
+        # Test with dilation
+        (8, 16, 3, 1, 1, 0, 2, (3, 8, 12)),
+        
+        # More complex case with all parameters
+        (32, 64, 6, 3, 3, 2, 2, (2, 32, 20)),
+    ]
+)
+def test_transposed_conv1d(
+    in_channels, out_channels, kernel_size, stride, 
+    padding, output_padding, dilation, input_shape
+):
+    # Create PyTorch transposed conv
+    torch_conv = torch.nn.ConvTranspose1d(
+        in_channels=in_channels, 
+        out_channels=out_channels, 
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        output_padding=output_padding,
+        dilation=dilation
+    )
+
+    # Create input tensor with the specified shape
+    x = torch.randn(*input_shape)
+    
+    # Get PyTorch output
+    with torch.no_grad():
+        y = torch_conv(x)
+        
+    # Create and initialize equivalent Flax module
+    nnx_conv = TransposedConv1d(
+        in_channels=in_channels, 
+        out_channels=out_channels, 
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        output_padding=output_padding,
+        dilation=dilation,
+        rngs=nnx.Rngs(0)
+    )
+
+    # Copy parameters from PyTorch to Flax
+    nnx_conv = copy_torch_params(torch_conv, nnx_conv)
+
+    # Get Flax output
+    nnx_y = nnx_conv(x.detach().numpy())
+
+    # Check that shapes match
+    assert y.shape == nnx_y.shape, f"PyTorch shape: {y.shape}, Flax shape: {nnx_y.shape}"
+
+    # Compute and log difference
+    diff = jnp.linalg.norm(y.detach().numpy() - nnx_y)
+    logger.info(f"TransposedConv1D diff (in={in_channels}, out={out_channels}, k={kernel_size}, s={stride}): {diff}")
+    
+    # Assert outputs are close
+    assert jnp.allclose(y.detach().numpy(), nnx_y, atol=TOL), f"l2 norm: {diff}"
 
 
 def add_print_hook(module: torch.nn.Module):

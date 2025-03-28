@@ -5,22 +5,20 @@ from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, B
 
 from torchaudio.models._hdemucs import _ScaledEmbedding, _LayerScale, _LocalState, _BLSTM, _DConv, _HEncLayer
 
-def torch_module_to_params(torch_module: torch.nn.Module) -> nnx.Param:
-    if isinstance(torch_module, _ScaledEmbedding):
-        return tensor_to_param(torch_module.weight)
-    elif isinstance(torch_module, _LayerScale):
-        return tensor_to_param(torch_module.scale)
-    elif isinstance(torch_module, _LocalState):
-        return {
-            
-        }
-    else:
-        raise ValueError(f"Unsupported module type: {type(torch_module)}")
+from conv import TransposedConv1d
 
 def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
     """
     Copies the parameters from a pytorch module and returns the corresponding nnx module.
     """
+
+    if isinstance(torch_module, _ScaledEmbedding):
+        nnx_module.embedding.embedding = tensor_to_param(torch_module.weight)
+        return nnx_module
+
+    if isinstance(torch_module, _LayerScale):
+        nnx_module.scale = tensor_to_param(torch_module.scale)
+        return nnx_module
 
     if isinstance(torch_module, torch.nn.Conv1d):
         if not isinstance(nnx_module, nnx.Conv):
@@ -167,6 +165,16 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         nnx_module.rewrite = copy_torch_params(torch_module.rewrite, nnx_module.rewrite)
         nnx_module.norm2 = copy_torch_params(torch_module.norm2, nnx_module.norm2)
         nnx_module.dconv = copy_torch_params(torch_module.dconv, nnx_module.dconv)
+
+        return nnx_module
+
+    if isinstance(torch_module, torch.nn.ConvTranspose1d):
+        if not isinstance(nnx_module, TransposedConv1d):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a TransposedConv1d")
+
+        nnx_module.weight = tensor_to_param(torch_module.weight)
+        if torch_module.bias is not None:
+            nnx_module.bias = tensor_to_param(torch_module.bias)
 
         return nnx_module
 

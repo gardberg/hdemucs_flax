@@ -14,6 +14,9 @@ Flax implementation of HDemucs audio source separation model
   - [x] _LocalState
 - [ ] _HDecLayer
 
+- [ ] Ruff linting
+- [ ] Pyright type checking
+- [ ] Shape annotations
 
 ## Notes
 

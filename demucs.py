@@ -1,9 +1,11 @@
 from flax import nnx
-from jax import Array, random
+from jax import Array
 import jax.numpy as jnp
 import jax.nn as nn
-from functools import partial, wraps
+from functools import partial
 from typing import Optional, Dict, Any, Union
+
+
 class ScaledEmbedding(nnx.Module):
     def __init__(
         self,
@@ -387,7 +389,7 @@ class HybridEncoderLayer(nnx.Module):
         # TODO: This prob needs to be rewritten to be jit compilable
         if not self.freq and x.ndim == 4:
             B, C, Fr, T = x.shape
-            x = x.view(B, -1, T)
+            x = x.reshape(B, -1, T)
 
         if not self.freq:
             le = x.shape[-1]
