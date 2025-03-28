@@ -7,6 +7,9 @@ import jax.numpy as jnp
 
 import jax
 
+import logging
+logger = logging.getLogger(__name__)
+
 # PyTorch style transposed 1d conv
 class TransposedConv1d(nnx.Module):
     """JAX implementation of torch.nn.ConvTranspose1d with PyTorch-compatible behavior."""
@@ -291,6 +294,8 @@ def gradient_based_conv_transpose(
   Returns:
     Transposed N-d convolution.
   """
+  logger.info(f"padding: {padding}")
+
   assert len(lhs.shape) == len(rhs.shape) and len(lhs.shape) >= 2
   ndims = len(lhs.shape)
   one = (1,) * (ndims - 2)
@@ -338,7 +343,10 @@ def gradient_based_conv_transpose(
         f"but got `output_shape` {output_shape}"
       )
 
+  logger.info(f"output_shape: {output_shape}")
+  logger.info(f"padding: {padding}")
   pads = tuple(map(_compute_adjusted_padding, i_sdims, output_shape, k_sdims, strides, padding, dilation))
+  logger.info(f"pads: {pads}")
 
   if transpose_kernel:
     # flip spatial dims and swap input / output channel axes

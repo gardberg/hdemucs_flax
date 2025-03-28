@@ -20,6 +20,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+logging.getLogger('jax').setLevel(logging.WARNING)
 
 @pytest.fixture
 def torch_model():
@@ -559,8 +560,8 @@ def test_transposed_conv2d(
 @pytest.mark.parametrize(
     "layer_idx, shape",
     [
-        (0, (1, 1536, 1)), # (batch_size, channels, length)
-        # (1, (1, 768, 1, 1)), # (batch_size, channels, freqs, length)
+        # (0, (1, 1536, 1)), # (batch_size, channels, length)
+        (1, (1, 768, 1, 1)), # (batch_size, channels, freqs, length)
     ]
 )
 def test_freq_decoder_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
@@ -572,8 +573,13 @@ def test_freq_decoder_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
     skip = torch.randn(*shape)
     length = x.shape[-1]
 
+    logger.info(f"x shape: {x.shape}, skip shape: {skip.shape}, length: {length}")
+
     with torch.no_grad():
-        y = torch_decoder_layer(x, skip, length)
+        z, y = torch_decoder_layer(x, skip, length)
+    
+    logger.info(f"y shape: {y.shape}")
+    logger.info(f"z shape: {z.shape}")
 
     # flax
     param_map = {
@@ -589,9 +595,12 @@ def test_freq_decoder_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
         },
         1: {
             "in_channels": 768,
-            "out_channels": 1536,
-            "kernel_size": 4,
-            "stride": 2,
+            "out_channels": 384,
+            "kernel_size": 8,
+            "stride": 4,
+            "freq": True,
+            "pad": False,
+            "norm_groups": 4,
         }
     }
     
@@ -601,7 +610,10 @@ def test_freq_decoder_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
     )
 
     nnx_decoder_layer = copy_torch_params(torch_decoder_layer, nnx_decoder_layer)
-    nnx_y = nnx_decoder_layer(x.detach().numpy(), skip.detach().numpy(), length)
+    print(nnx_decoder_layer)
+    nnx_z, nnx_y = nnx_decoder_layer(x.detach().numpy(), skip.detach().numpy(), length)
+
+    logger.info(f"nnx_y shape: {nnx_y.shape}, nnx_z shape: {nnx_z.shape}")
 
     assert y.shape == nnx_y.shape, f"y shape: {y.shape} must match nnx_y shape: {nnx_y.shape}"
 

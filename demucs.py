@@ -7,6 +7,9 @@ from typing import Optional, Dict, Any, Union
 
 from conv import TransposedConv1d, TransposedConv2d
 
+import logging
+logger = logging.getLogger(__name__)
+
 class ScaledEmbedding(nnx.Module):
     def __init__(
         self,
@@ -452,6 +455,7 @@ class HybridDecoderLayer(nnx.Module):
         else:
             pad = 0
 
+        logger.info(f"hdec pad: {pad}")
         self.pad = pad
 
         self.last = last
@@ -477,8 +481,8 @@ class HybridDecoderLayer(nnx.Module):
             self.rewrite = Identity()
             self.norm1 = Identity()
         else:
-            self.rewrite = self.conv_class(out_channels, 2 * out_channels, 1 + 2 * context, padding=context, rngs=rngs)
-            self.norm1 = norm_fn(2 * out_channels)
+            self.rewrite = self.conv_class(in_channels, 2 * in_channels, 1 + 2 * context, padding=context, rngs=rngs)
+            self.norm1 = norm_fn(2 * in_channels)
 
 
     def __call__(self, x: Array, skip: Array = None, length: int = 0) -> Array:
