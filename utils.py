@@ -1,23 +1,22 @@
 import torch
 from flax import nnx
 
-from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, Identity, TorchConv, TorchConv2d
+from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, Identity, TorchConv, TorchConv2d, HybridDecoderLayer
 
-from torchaudio.models._hdemucs import _ScaledEmbedding, _LayerScale, _LocalState, _BLSTM, _DConv, _HEncLayer
+from torchaudio.models._hdemucs import _ScaledEmbedding, _LayerScale, _LocalState, _BLSTM, _DConv, _HEncLayer, _HDecLayer
 
-from conv import TransposedConv1d
+from conv import TransposedConv1d, TransposedConv2d
 
 def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
     """
     Copies the parameters from a pytorch module and returns the corresponding nnx module.
     """
+    print(f"Copying {type(torch_module)} to {type(nnx_module)}")
 
     if isinstance(torch_module, _ScaledEmbedding):
+        if not isinstance(nnx_module, ScaledEmbedding):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a ScaledEmbedding")
         nnx_module.embedding.embedding = tensor_to_param(torch_module.weight)
-        return nnx_module
-
-    if isinstance(torch_module, _LayerScale):
-        nnx_module.scale = tensor_to_param(torch_module.scale)
         return nnx_module
 
     if isinstance(torch_module, torch.nn.Conv1d):
@@ -172,11 +171,39 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         if not isinstance(nnx_module, TransposedConv1d):
             raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a TransposedConv1d")
 
+        if torch_module.weight.shape != nnx_module.weight.shape:
+            raise ValueError(f"Attempted to convert torch module with weight shape {torch_module.weight.shape} to nnx_module with weight shape {nnx_module.weight.shape}")
+
         nnx_module.weight = tensor_to_param(torch_module.weight)
         if torch_module.bias is not None:
             nnx_module.bias = tensor_to_param(torch_module.bias)
 
         return nnx_module
+
+    if isinstance(torch_module, torch.nn.ConvTranspose2d):
+        if not isinstance(nnx_module, TransposedConv2d):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a TransposedConv2d")
+
+        if torch_module.weight.shape != nnx_module.weight.shape:
+            raise ValueError(f"Attempted to convert torch module with weight shape {torch_module.weight.shape} to nnx_module with weight shape {nnx_module.weight.shape}")
+
+        nnx_module.weight = tensor_to_param(torch_module.weight)
+        if torch_module.bias is not None:
+            nnx_module.bias = tensor_to_param(torch_module.bias)
+
+        return nnx_module
+
+    if isinstance(torch_module, _HDecLayer):
+        if not isinstance(nnx_module, HybridDecoderLayer):
+            raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a HybridDecoderLayer")
+
+        nnx_module.conv_tr = copy_torch_params(torch_module.conv_tr, nnx_module.conv_tr)
+        nnx_module.norm2 = copy_torch_params(torch_module.norm2, nnx_module.norm2)
+        nnx_module.rewrite = copy_torch_params(torch_module.rewrite, nnx_module.rewrite)
+        nnx_module.norm1 = copy_torch_params(torch_module.norm1, nnx_module.norm1)
+
+        return nnx_module
+        
 
     else:
         raise ValueError(f"Coverting {type(torch_module)} to nnx.Module not implemented")

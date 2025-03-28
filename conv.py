@@ -9,12 +9,14 @@ import jax
 
 # PyTorch style transposed 1d conv
 class TransposedConv1d(nnx.Module):
+    """JAX implementation of torch.nn.ConvTranspose1d with PyTorch-compatible behavior."""
+    
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
         kernel_size: int,
-        stride: Union[int, Tuple[int, ...]] = 1,
+        strides: Union[int, Tuple[int, ...]] = 1,
         padding: Union[int, Tuple[int, int]] = 0,
         output_padding: Union[int, Tuple[int, ...]] = 0,
         groups: int = 1,
@@ -26,48 +28,34 @@ class TransposedConv1d(nnx.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
-        self.stride = stride
+        self.strides = strides
         self.padding = padding
         self.output_padding = output_padding
         self.groups = groups
-        self.bias = bias
         self.dilation = dilation
 
-        self.k = groups / (out_channels * kernel_size)
-
-        self.initializer = initializers.kaiming_uniform(
-            in_axis=0,
-            out_axis=1,
-            batch_axis=(),
-        )
-
-        # In PyTorch, kernel shape is (out_channels, in_channels / groups, kernel_size)
-        # This is different from regular Conv1d where it's (out_channels, in_channels / groups, kernel_size)
-        # TODO: Fix deterministic key here?
+        # Use PyTorch weight layout: (out_channels, in_channels/groups, kernel_size)
         self.weight = nnx.Param(
-            self.initializer(jax.random.PRNGKey(0), (out_channels, int(in_channels / groups), kernel_size))
+            initializers.kaiming_uniform(in_axis=0, out_axis=1, batch_axis=())(
+                rngs.params(), (in_channels, out_channels // groups, kernel_size)
+            )
         )
 
-        # bias of shape (out_channels,)
-        self.bias = nnx.Param(
-            jnp.zeros((out_channels,))
-        ) if self.bias else None
-        
+        self.bias = nnx.Param(jnp.zeros((out_channels,))) if bias else None
 
     def __call__(self, x: Array) -> Array:
+        """Applies transposed convolution to input tensor.
+        
+        Args:
+            x: Input tensor of shape (batch_size, in_channels, length)
+            
+        Returns:
+            Output tensor of shape (batch_size, out_channels, out_length)
         """
-        x: shape (batch_size, in_features, in_length)
-        return shape (batch_size, out_features, out_length)
-        where out_length = (in_length - 1) * strides - 2 * padding + dilation * (kernel_size - 1) + output_padding + 1
-        """
-        # For TransposedConv1d, dimension_numbers need to match PyTorch's tensor layout:
-        # - Input: (N, C_in, L)
-        # - Weight: (C_out, C_in, K) 
-        # - Output: (N, C_out, L_out)
         result = gradient_based_conv_transpose(
             lhs=x,
             rhs=self.weight,
-            strides=(self.stride,),
+            strides=(self.strides,),
             padding=[(self.padding, self.padding)],
             output_padding=(self.output_padding,),
             dilation=(self.dilation,),
@@ -75,21 +63,81 @@ class TransposedConv1d(nnx.Module):
             transpose_kernel=True,
         )
         
-        # Add bias if present
         if self.bias is not None:
             result = result + self.bias.reshape(1, -1, 1)
             
         return result
 
 class TransposedConv2d(nnx.Module):
-    pass
+    """JAX implementation of torch.nn.ConvTranspose2d with PyTorch-compatible behavior."""
+    
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Union[int, Tuple[int, int]],
+        strides: Union[int, Tuple[int, int]] = 1,
+        padding: Union[int, Tuple[int, int]] = 0,
+        output_padding: Union[int, Tuple[int, int]] = 0,
+        groups: int = 1,
+        bias: bool = True,
+        dilation: Union[int, Tuple[int, int]] = 1,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        
+        # Handle scalar and tuple parameters
+        self.kernel_size = (kernel_size, kernel_size) if isinstance(kernel_size, int) else kernel_size
+        self.strides = (strides, strides) if isinstance(strides, int) else strides
+        self.padding = (padding, padding) if isinstance(padding, int) else padding
+        self.output_padding = (output_padding, output_padding) if isinstance(output_padding, int) else output_padding
+        self.dilation = (dilation, dilation) if isinstance(dilation, int) else dilation
+        self.groups = groups
+
+        # Use PyTorch weight layout: (out_channels, in_channels/groups, kernel_height, kernel_width)
+        self.weight = nnx.Param(
+            initializers.kaiming_uniform(in_axis=0, out_axis=1, batch_axis=())(
+                rngs.params(), (in_channels, out_channels // groups, self.kernel_size[0], self.kernel_size[1])
+            )
+        )
+
+        self.bias = nnx.Param(jnp.zeros((out_channels,))) if bias else None
+
+    def __call__(self, x: Array, output_size: Optional[Tuple[int, ...]] = None) -> Array:
+        """Applies 2D transposed convolution to input tensor.
+        
+        Args:
+            x: Input tensor of shape (batch_size, in_channels, height, width)
+            output_size: Optional explicit output size to target
+            
+        Returns:
+            Output tensor of shape (batch_size, out_channels, out_height, out_width)
+        """
+        result = gradient_based_conv_transpose(
+            lhs=x,
+            rhs=self.weight,
+            strides=self.strides,
+            padding=[(self.padding[0], self.padding[0]), (self.padding[1], self.padding[1])],
+            output_padding=self.output_padding,
+            output_shape=output_size[2:] if output_size is not None else None,
+            dilation=self.dilation,
+            dimension_numbers=('NCHW', 'OIHW', 'NCHW'),
+            transpose_kernel=True,
+        )
+        
+        if self.bias is not None:
+            result = result + self.bias.reshape(1, -1, 1, 1)
+            
+        return result
 
 
 def _flip_axes(x: Array, axes: Tuple[int, ...]) -> Array:
-  """Flip ndarray 'x' along each axis specified in axes tuple."""
-  for axis in axes:
-    x = jnp.flip(x, axis)
-  return x
+    """Flip ndarray along specified axes."""
+    for axis in axes:
+        x = jnp.flip(x, axis)
+    return x
 
 # code adopted from https://github.com/jax-ml/jax/pull/5772
 
@@ -181,10 +229,9 @@ def _compute_adjusted_padding(
   return (pad_before, pad_after)
 
 
-# adopted from https://github.com/samuela/torch2jax/blob/main/torch2jax/__init__.py
 def gradient_based_conv_transpose(
-  lhs: Array,
-  rhs: Array,
+  lhs,
+  rhs,
   strides: Sequence[int],
   padding: Union[str, Sequence[Tuple[int, int]]],
   output_padding: Optional[Sequence[int]] = None,
@@ -298,3 +345,4 @@ def gradient_based_conv_transpose(
     rhs = _flip_axes(rhs, dn.rhs_spec[2:])
     rhs = jnp.swapaxes(rhs, dn.rhs_spec[0], dn.rhs_spec[1])
   return jax.lax.conv_general_dilated(lhs, rhs, one, pads, strides, dilation, dn, precision=precision)
+

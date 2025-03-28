@@ -5,6 +5,7 @@ import jax.nn as nn
 from functools import partial
 from typing import Optional, Dict, Any, Union
 
+from conv import TransposedConv1d, TransposedConv2d
 
 class ScaledEmbedding(nnx.Module):
     def __init__(
@@ -407,7 +408,7 @@ class HybridEncoderLayer(nnx.Module):
 
             y = y + inject
 
-        y: Array = nn.gelu(self.norm1(y), approximate=False)
+        y: Array = nnx.gelu(self.norm1(y), approximate=False)
         if self.freq:
             B, C, Fr, T = y.shape
             y = y.transpose(0, 2, 1, 3).reshape(-1, C, T)
@@ -417,9 +418,121 @@ class HybridEncoderLayer(nnx.Module):
             y = self.dconv(y)
 
         z = self.norm2(self.rewrite(y))
-        z = nn.glu(z, axis=1)
+        z = nnx.glu(z, axis=1)
 
         return z
+
+        
+class HybridDecoderLayer(nnx.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        last: bool = False,
+        kernel_size: int = 8,
+        stride: int = 4,
+        norm_groups: int = 1,
+        empty: bool = False,
+        freq: bool = True,
+        norm_type: str = "group_norm",
+        context: int = 1,
+        dconv_kw: Optional[Dict[str, Any]] = None,
+        pad: bool = True,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        if dconv_kw is None: dconv_kw = {}
+
+        norm_fn = _get_norm_fn(norm_type, num_groups=norm_groups, epsilon=1e-5, rngs=rngs)
+
+        if pad:
+            if (kernel_size - stride) % 2 != 0:
+                raise ValueError("Kernel size and stride do not align")
+            pad = (kernel_size - stride) // 2
+        else:
+            pad = 0
+
+        self.pad = pad
+
+        self.last = last
+        self.freq = freq
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.empty = empty
+
+        self.conv_class = TorchConv2d if freq else TorchConv
+        self.conv_class_tr = TransposedConv2d if freq else TransposedConv1d
+
+        if freq: # 2d
+            kernel_size = (kernel_size, 1)
+            stride = (stride, 1)
+
+        self.stride = stride
+        self.kernel_size = kernel_size
+
+        self.conv_tr = self.conv_class_tr(in_channels, out_channels, kernel_size=kernel_size, padding=pad, strides=stride, rngs=rngs)
+        self.norm2 = norm_fn(out_channels)
+
+        if empty:
+            self.rewrite = Identity()
+            self.norm1 = Identity()
+        else:
+            self.rewrite = self.conv_class(out_channels, 2 * out_channels, 1 + 2 * context, padding=context, rngs=rngs)
+            self.norm1 = norm_fn(2 * out_channels)
+
+
+    def __call__(self, x: Array, skip: Array = None, length: int = 0) -> Array:
+        r"""Forward pass for decoding layer.
+
+        Size depends on whether frequency or time
+
+        Args:
+            x (torch.Tensor): tensor input of shape `(B, C, F, T)` for frequency and shape
+                `(B, C, T)` for time
+            skip (torch.Tensor, optional): on first layer, separate frequency and time branches using param
+                (default: ``None``)
+            length (int): Size of tensor for output
+
+        Returns:
+            (Tensor, Tensor):
+                Tensor
+                    output tensor after decoder layer of shape `(B, C, F * stride, T)` for frequency domain except last
+                        frequency layer shape is `(B, C, kernel_size, T)`. Shape is `(B, C, stride * T)`
+                        for time domain.
+                Tensor
+                    contains the output just before final transposed convolution, which is used when the
+                        freq. and time branch separate. Otherwise, does not matter. Shape is
+                        `(B, C, F, T)` for frequency and `(B, C, T)` for time.
+        """
+
+        # x shouldnt have dim 3 here when freq right?
+        # TODO: Make jit-compatible
+        if self.freq and x.ndim == 3:
+            B, C, T = x.shape
+            x = x.reshape(B, self.in_channels, -1, T)
+
+        if not self.empty:
+            x = x + skip
+            y = nnx.glu(self.norm1(self.rewrite(x)), axis=1)
+        else:
+            y = x
+            if skip is not None:
+                raise ValueError("Skip must be none when empty is true.")
+
+        z = self.norm2(self.conv_tr(y))
+        if self.freq:
+            if self.pad:
+                z = z[..., self.pad : -self.pad, :]
+        else:
+            z = z[..., self.pad : self.pad + length]
+            if z.shape[-1] != length:
+                raise ValueError("Length mismatch")
+
+        if not self.last:
+            z = nnx.gelu(z)
+
+        return z, y
+        
 
 
 def _get_norm_fn(norm_type: str, *args, **kwargs):
