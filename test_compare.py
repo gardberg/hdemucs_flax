@@ -4,6 +4,7 @@ import torch
 import jax.numpy as jnp
 from flax import nnx
 import logging
+import flax.linen as nn
 
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, TorchConv, HybridEncoderLayer, HybridDecoderLayer
 from utils import copy_torch_params
@@ -344,7 +345,7 @@ def test_freq_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
         (4, (1, 384, 2)),  # Fifth time encoder layer (empty layer)
     ]
 )
-def test_time_enc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
+def test_time_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
     torch_henc_layer = torch_model.time_encoder[layer_idx]
 
     # add_print_hook(torch_henc_layer)
@@ -560,14 +561,18 @@ def test_transposed_conv2d(
 @pytest.mark.parametrize(
     "layer_idx, shape",
     [
-        # (0, (1, 1536, 1)), # (batch_size, channels, length)
-        (1, (1, 768, 1, 1)), # (batch_size, channels, freqs, length)
+        (0, (1, 1536, 1)), # (batch_size, channels, length)
+        # (1, (1, 768, 1, 1)), # (batch_size, channels, freqs, length)
+        # (4, (1, 96, 128, 1)), # (batch_size, channels, freqs, length)
+        # (5, (1, 48, 512, 1)), # (batch_size, channels, freqs, length)
     ]
 )
-def test_freq_decoder_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
+def test_freq_hdec_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
     torch_decoder_layer = torch_model.freq_decoder[layer_idx]
 
-    # add_print_hook(torch_decoder_layer)
+    print("\nTORCH\n")
+
+    add_print_hook(torch_decoder_layer)
 
     x = torch.randn(*shape)
     skip = torch.randn(*shape)
@@ -601,8 +606,30 @@ def test_freq_decoder_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
             "freq": True,
             "pad": False,
             "norm_groups": 4,
+        },
+        4: {
+            "in_channels": 96,
+            "out_channels": 48,
+            "kernel_size": 8,
+            "stride": 4,
+            "freq": True,
+            "norm_groups": 4,
+            "norm_type": "identity",
+            "pad": False,
+        },
+        5: {
+            "in_channels": 48,
+            "out_channels": 16,
+            "kernel_size": 8,
+            "stride": 4,
+            "freq": True,
+            "norm_groups": 4,
+            "norm_type": "identity",
+            "pad": False,
         }
     }
+
+    print("\nFLAX\n")
     
     nnx_decoder_layer = HybridDecoderLayer(
         **param_map[layer_idx],
@@ -610,7 +637,7 @@ def test_freq_decoder_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
     )
 
     nnx_decoder_layer = copy_torch_params(torch_decoder_layer, nnx_decoder_layer)
-    print(nnx_decoder_layer)
+
     nnx_z, nnx_y = nnx_decoder_layer(x.detach().numpy(), skip.detach().numpy(), length)
 
     logger.info(f"nnx_y shape: {nnx_y.shape}, nnx_z shape: {nnx_z.shape}")

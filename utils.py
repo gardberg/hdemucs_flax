@@ -1,21 +1,28 @@
 import torch
 from flax import nnx
-
+import jax.numpy as jnp
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, Identity, TorchConv, TorchConv2d, HybridDecoderLayer
 
 from torchaudio.models._hdemucs import _ScaledEmbedding, _LayerScale, _LocalState, _BLSTM, _DConv, _HEncLayer, _HDecLayer
 
 from conv import TransposedConv1d, TransposedConv2d
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
     """
     Copies the parameters from a pytorch module and returns the corresponding nnx module.
     """
-    print(f"Copying {type(torch_module)} to {type(nnx_module)}")
+    logger.info(f"Copying {type(torch_module)} to {type(nnx_module)}")
 
     if isinstance(torch_module, _ScaledEmbedding):
         if not isinstance(nnx_module, ScaledEmbedding):
             raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a ScaledEmbedding")
+        if torch_module.weight.shape != nnx_module.embedding.embedding.shape:
+            raise ValueError(f"Attempted to convert torch module with weight shape {torch_module.weight.shape} to nnx_module with weight shape {nnx_module.embedding.embedding.shape}")
+
         nnx_module.embedding.embedding = tensor_to_param(torch_module.weight)
         return nnx_module
 
@@ -134,6 +141,12 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         if not isinstance(nnx_module, nnx.GroupNorm):
             raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a GroupNorm")
 
+        if torch_module.weight.shape != nnx_module.scale.shape:
+            raise ValueError(f"Attempted to convert torch module with weight shape {torch_module.weight.shape} to nnx_module with scale shape {nnx_module.scale.shape}")
+        
+        if torch_module.bias.shape != nnx_module.bias.shape:
+            raise ValueError(f"Attempted to convert torch module with bias shape {torch_module.bias.shape} to nnx_module with bias shape {nnx_module.bias.shape}")
+
         nnx_module.scale = tensor_to_param(torch_module.weight)
         nnx_module.bias = tensor_to_param(torch_module.bias)
 
@@ -150,6 +163,9 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
     if isinstance(torch_module, _LayerScale):
         if not isinstance(nnx_module, LayerScale):
             raise ValueError(f"Attempted to convert torch module type {type(torch_module)} to nnx_module type {type(nnx_module)}, which is not a LayerScale")
+
+        if torch_module.scale.shape != nnx_module.scale.shape:
+            raise ValueError(f"Attempted to convert torch module with scale shape {torch_module.scale.shape} to nnx_module with scale shape {nnx_module.scale.shape}")
 
         nnx_module.scale = tensor_to_param(torch_module.scale)
 
@@ -254,4 +270,33 @@ def copy_single_direction(torch_lstm: torch.nn.LSTM, flax_cell: nnx.RNN, layer_i
 
 def tensor_to_param(torch_tensor: torch.Tensor) -> nnx.Param:
     return nnx.Param(value=torch_tensor.detach().numpy())
+
+
+def print_shapes_hook(next_fun, args, kwargs, context):
+    """
+    Interceptor that prints input and output shapes and norms.
+    Similar to PyTorch's forward hook.
+    """
+    # Get module name and class
+    module_name = context.module.name if hasattr(context.module, 'name') else context.module.__class__.__name__
+    method_name = context.method_name
+    
+    # Print input information
+    if args:
+        input_shapes = [arg.shape if hasattr(arg, 'shape') else None for arg in args]
+        input_norms = [jnp.linalg.norm(arg) if hasattr(arg, 'shape') else None for arg in args]
+        print(f"{module_name}.{method_name} input shapes: {input_shapes}, norms: {input_norms}")
+    
+    # Call the original method to get the output
+    output = next_fun(*args, **kwargs)
+    
+    # Print output information
+    if hasattr(output, 'shape'):
+        print(f"{module_name}.{method_name} output shape: {output.shape}, norm: {jnp.linalg.norm(output)}")
+    elif isinstance(output, tuple) and hasattr(output[0], 'shape'):
+        output_shapes = [out.shape if hasattr(out, 'shape') else None for out in output]
+        output_norms = [jnp.linalg.norm(out) if hasattr(out, 'shape') else None for out in output]
+        print(f"{module_name}.{method_name} output shapes: {output_shapes}, norms: {output_norms}")
+    
+    return output
 
