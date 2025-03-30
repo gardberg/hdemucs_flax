@@ -17,6 +17,8 @@ Flax implementation of HDemucs audio source separation model
 - [ ] Ruff linting
 - [ ] Pyright type checking
 - [ ] Shape annotations
+- [x] Custom interceptor logic
+  - How do we handle modules that do not subclass the custom module?
 
 ## Notes
 

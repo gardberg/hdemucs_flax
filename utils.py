@@ -10,6 +10,7 @@ from conv import TransposedConv1d, TransposedConv2d
 import logging
 
 logger = logging.getLogger(__name__)
+logging.getLogger('jax').setLevel(logging.WARNING)
 
 def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
     """
@@ -281,22 +282,43 @@ def print_shapes_hook(next_fun, args, kwargs, context):
     module_name = context.module.name if hasattr(context.module, 'name') else context.module.__class__.__name__
     method_name = context.method_name
     
+    header = f"\n{'='*80}\n{module_name}.{method_name}\n{'-'*80}"
+    
     # Print input information
     if args:
-        input_shapes = [arg.shape if hasattr(arg, 'shape') else None for arg in args]
-        input_norms = [jnp.linalg.norm(arg) if hasattr(arg, 'shape') else None for arg in args]
-        print(f"{module_name}.{method_name} input shapes: {input_shapes}, norms: {input_norms}")
+        print(header)
+        print("INPUTS:")
+        for i, arg in enumerate(args):
+            if hasattr(arg, 'shape'):
+                shape_str = str(tuple(arg.shape)).ljust(20)
+                norm = jnp.linalg.norm(arg).item()
+                norm_str = f"{norm:.6f}".rjust(12)
+                print(f"  arg{i}:    {shape_str}    norm: {norm_str}")
     
     # Call the original method to get the output
     output = next_fun(*args, **kwargs)
     
     # Print output information
     if hasattr(output, 'shape'):
-        print(f"{module_name}.{method_name} output shape: {output.shape}, norm: {jnp.linalg.norm(output)}")
+        if not args:  # Print header if not already printed
+            print(header)
+        print("\nOUTPUT:")
+        shape_str = str(tuple(output.shape)).ljust(20)
+        norm = jnp.linalg.norm(output).item()
+        norm_str = f"{norm:.6f}".rjust(12)
+        print(f"  out0:   {shape_str}    norm: {norm_str}")
+        
     elif isinstance(output, tuple) and hasattr(output[0], 'shape'):
-        output_shapes = [out.shape if hasattr(out, 'shape') else None for out in output]
-        output_norms = [jnp.linalg.norm(out) if hasattr(out, 'shape') else None for out in output]
-        print(f"{module_name}.{method_name} output shapes: {output_shapes}, norms: {output_norms}")
+        if not args:  # Print header if not already printed
+            print(header)
+        print("\nOUTPUTS:")
+        for i, out in enumerate(output):
+            if hasattr(out, 'shape'):
+                shape_str = str(tuple(out.shape)).ljust(20)
+                norm = jnp.linalg.norm(out).item()
+                norm_str = f"{norm:.6f}".rjust(12)
+                print(f"  out{i}:    {shape_str}    norm: {norm_str}")
     
+    print(f"{'='*80}\n")
     return output
 

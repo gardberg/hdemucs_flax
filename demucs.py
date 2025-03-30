@@ -6,11 +6,12 @@ from functools import partial
 from typing import Optional, Dict, Any, Union
 
 from conv import TransposedConv1d, TransposedConv2d
+from module import Module
 
 import logging
 logger = logging.getLogger(__name__)
 
-class ScaledEmbedding(nnx.Module):
+class ScaledEmbedding(Module):
     def __init__(
         self,
         n_emb: int = 512,
@@ -30,7 +31,7 @@ class ScaledEmbedding(nnx.Module):
         return self.embedding(x) * self.scale
 
 
-class Identity(nnx.Module):
+class Identity(Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -38,7 +39,7 @@ class Identity(nnx.Module):
         return input
 
 
-class LayerScale(nnx.Module):
+class LayerScale(Module):
     def __init__(self, channels: int, init: float = 0):
         self.scale = nnx.Param(jnp.zeros(channels) + init)
 
@@ -46,7 +47,7 @@ class LayerScale(nnx.Module):
         return self.scale[:, None] * x
         
         
-class LocalState(nnx.Module):
+class LocalState(Module):
     def __init__(
         self,
         channels: int,
@@ -119,7 +120,7 @@ class LocalState(nnx.Module):
         # Return in original format
         return jnp.transpose(out_flax, (0, 2, 1))
 
-class BidirectionalLSTM(nnx.Module):
+class BidirectionalLSTM(Module):
     def __init__(self, num_layers: int, hidden_size: int, input_size: int, *, rngs: nnx.Rngs):
         self.num_layers = num_layers
         self.hidden_size = hidden_size
@@ -151,7 +152,7 @@ class BidirectionalLSTM(nnx.Module):
             x = layer(x)
         return x
 
-class BLSTM(nnx.Module):
+class BLSTM(Module):
     def __init__(self, dim: int, layers: int = 1, skip: bool = False, *, rngs: nnx.Rngs):
         self.max_steps = 200
         self.lstm = BidirectionalLSTM(num_layers=layers, hidden_size=dim, input_size=dim, rngs=rngs)
@@ -265,7 +266,7 @@ class TorchGroupNorm(nnx.GroupNorm):
         perm_back = [0, ndim-1] + list(range(1, ndim-1))
         return out_flax.transpose(*perm_back)
 
-class DConv(nnx.Module):
+class DConv(Module):
     def __init__(
         self,
         channels: int,
@@ -323,12 +324,11 @@ class DConv(nnx.Module):
         for seq in self.layers:
             residual = x
             for layer in seq:
-                # print(f"calling {type(layer)} with x shape:\t {x.shape}, norm: {jnp.linalg.norm(x)}")
                 x = layer(x)
             x += residual
         return x
 
-class HybridEncoderLayer(nnx.Module):
+class HybridEncoderLayer(Module):
 
     def __init__(
         self,
@@ -426,7 +426,7 @@ class HybridEncoderLayer(nnx.Module):
         return z
 
         
-class HybridDecoderLayer(nnx.Module):
+class HybridDecoderLayer(Module):
     def __init__(
         self,
         in_channels: int,
@@ -455,7 +455,6 @@ class HybridDecoderLayer(nnx.Module):
         else:
             pad = 0
 
-        logger.info(f"hdec pad: {pad}")
         self.pad = pad
 
         self.last = last
@@ -474,7 +473,7 @@ class HybridDecoderLayer(nnx.Module):
         self.stride = stride
         self.kernel_size = kernel_size
 
-        self.conv_tr = self.conv_class_tr(in_channels, out_channels, kernel_size=kernel_size, padding=pad, strides=stride, rngs=rngs)
+        self.conv_tr = self.conv_class_tr(in_channels, out_channels, kernel_size=kernel_size, strides=stride, rngs=rngs)
         self.norm2 = norm_fn(out_channels)
 
         if empty:
@@ -517,13 +516,16 @@ class HybridDecoderLayer(nnx.Module):
 
         if not self.empty:
             x = x + skip
-            y = nnx.glu(self.norm1(self.rewrite(x)), axis=1)
+            x = self.rewrite(x)
+            x = self.norm1(x)
+            y = nnx.glu(x, axis=1)
         else:
             y = x
             if skip is not None:
                 raise ValueError("Skip must be none when empty is true.")
 
-        z = self.norm2(self.conv_tr(y))
+        z = self.conv_tr(y)
+        z = self.norm2(z)
         if self.freq:
             if self.pad:
                 z = z[..., self.pad : -self.pad, :]
@@ -533,8 +535,7 @@ class HybridDecoderLayer(nnx.Module):
                 raise ValueError("Length mismatch")
 
         if not self.last:
-            z = nnx.gelu(z)
-
+            z = nnx.gelu(z, approximate=False)
         return z, y
         
 
