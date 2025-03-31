@@ -4,15 +4,21 @@ Flax implementation of HDemucs audio source separation model
 
 ## TODO
 
+- [ ] HDemucs
+  - [ ] Utility tests
+  - [ ] e2e-tests
+  - [ ] Numerical diff test
 - [x] ScaledEmbedding
 - [x] _HencLayer
-  - [ ] Time-tests
+  - [x] Time-tests
   - [x] _DConv
     - [x] _LayerScale
     - [x] _BLSTM
       - [x] BidirectionalLSTM
   - [x] _LocalState
-- [ ] _HDecLayer
+- [x] _HDecLayer
+  - [x] Freq tests
+  - [x] Time tests
 
 - [ ] Ruff linting
 - [ ] Pyright type checking

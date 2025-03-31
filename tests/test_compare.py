@@ -658,6 +658,10 @@ def test_freq_hdec_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
 
 @pytest.mark.parametrize("layer_idx, shape", [
     (0, (1, 768, 1)), # (batch_size, channels, length)
+    (1, (1, 384, 1)),
+    (2, (1, 192, 1)),
+    (3, (1, 96, 1)),
+    (4, (1, 48, 1)),
 ])
 def test_time_hdec_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
     torch_decoder_layer = torch_model.time_decoder[layer_idx]
@@ -691,6 +695,43 @@ def test_time_hdec_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
             "last": False,
             "pad": True,
             "empty": True,
+        },
+        1: {
+            "in_channels": 384,
+            "out_channels": 192,
+            "kernel_size": 8,
+            "stride": 4,
+            "norm_type": "identity",
+            "freq": False,
+            "pad": True,
+        },
+        2: {
+            "in_channels": 192,
+            "out_channels": 96,
+            "kernel_size": 8,
+            "stride": 4,
+            "norm_type": "identity",
+            "freq": False,
+            "pad": True,
+        },
+        3: {
+            "in_channels": 96,
+            "out_channels": 48,
+            "kernel_size": 8,
+            "stride": 4,
+            "norm_type": "identity",
+            "freq": False,
+            "pad": True,
+        },
+        4: {
+            "in_channels": 48,
+            "out_channels": 8,
+            "kernel_size": 8,
+            "stride": 4,
+            "norm_type": "identity",
+            "freq": False,
+            "pad": True,
+            "last": True,
         }
     }
 
