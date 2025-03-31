@@ -82,3 +82,41 @@ def test_multiple_interceptors():
     
     # Verify both interceptors were called in the correct order
     assert calls == [1, 2], f"Interceptors called in wrong order: {calls}"
+
+
+def test_intercept_submodules():
+    class Submodule(Module):
+        def __call__(self, x):
+            logger.info("Submodule __call__ called")
+            return x
+            
+    class ParentModule(Module):
+        def __init__(self):
+            super().__init__()
+            self.submodule = Submodule()
+            
+        def __call__(self, x):
+            logger.info("ParentModule __call__ called")
+            return self.submodule(x)
+
+    intercepted_modules = []
+    def interceptor(next_fun, args, kwargs, context):
+        logger.info(f"Interceptor called for {context.module.__class__.__name__}")
+        # Record which module was intercepted
+        module_name = context.module.__class__.__name__
+        intercepted_modules.append(module_name)
+        return next_fun(*args, **kwargs)
+            
+    parent = ParentModule()
+    x = jnp.ones((2, 2))
+    
+    with intercept_methods(interceptor):
+        parent(x)
+    
+    # Verify both parent and submodule were intercepted
+    assert len(intercepted_modules) == 2, f"Expected 2 intercepted calls, got {len(intercepted_modules)}"
+    assert "ParentModule" in intercepted_modules, "ParentModule was not intercepted"
+    assert "Submodule" in intercepted_modules, "Submodule was not intercepted"
+    # Verify parent was intercepted before submodule
+    assert intercepted_modules[0] == "ParentModule", "ParentModule should be intercepted first"
+    assert intercepted_modules[1] == "Submodule", "Submodule should be intercepted second"
