@@ -85,12 +85,18 @@ NextGetter = Callable[..., Any]
 Interceptor = Callable[[NextGetter, Args, Kwargs, InterceptorContext], Any]
 _global_interceptor_stack = ThreadLocalStack()
 
+# TODO: Add a flag to only intercept the root __call__
+# TODO: Handle modules that are not subclasses of 'Module', e.g. that subclass nnx.Conv or nnx.GroupNorm
 @contextlib.contextmanager
 def intercept_methods(interceptor: Interceptor):
-  """Context manager that registers an interceptor for module method calls.
+  """Context manager that registers an interceptor for module method '__call__'.
+
+  This context manager will run the interceptor for all __call__ methods ran
+  inside the context by any subclasses to 'Module'. This includes any submodules
+  of the module, i.e. any other Module.__call__ methods that are called by the root
+  Module.__call__ method.
   
-  Any method calls inside this context will pass through the interceptor,
-  which can modify arguments, results, or skip calling the original method.
+  The interceptor can for example modify arguments, results, or skip calling the original method.
   
   Args:
     interceptor: A callable that takes (next_method, args, kwargs, context)

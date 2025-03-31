@@ -5,12 +5,12 @@ from flax.nnx.nn import initializers
 import jax.numpy as jnp
 
 import jax
-
+from module import Module
 import logging
 logger = logging.getLogger(__name__)
 
 # PyTorch style transposed 1d conv
-class TransposedConv1d(nnx.Module):
+class TransposedConv1d(Module):
     """JAX implementation of torch.nn.ConvTranspose1d with PyTorch-compatible behavior."""
     
     def __init__(
@@ -70,7 +70,7 @@ class TransposedConv1d(nnx.Module):
             
         return result
 
-class TransposedConv2d(nnx.Module):
+class TransposedConv2d(Module):
     """JAX implementation of torch.nn.ConvTranspose2d with PyTorch-compatible behavior."""
     
     def __init__(
