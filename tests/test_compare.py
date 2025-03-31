@@ -1,12 +1,13 @@
 import pytest
-from torchaudio.models import HDemucs
+from torchaudio.models import HDemucs as TorchHDemucs
 import torch
 import jax.numpy as jnp
 from flax import nnx
 import logging
+import numpy as np
 
-from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, TorchConv, HybridEncoderLayer, HybridDecoderLayer
-from utils import copy_torch_params, print_shapes_hook
+from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, TorchConv, HybridEncoderLayer, HybridDecoderLayer, HDemucs
+from utils import copy_torch_params, print_shapes_hook, calc_spectrogram
 from conv import TransposedConv1d, TransposedConv2d
 
 from module import intercept_methods
@@ -31,7 +32,7 @@ def torch_model():
     state_dict_path = "models/hdemucs_high_trained.pt"
 
     sources = ["drums", "bass", "other", "vocals"]
-    model = HDemucs(sources=sources, nfft=4096, depth=6)
+    model = TorchHDemucs(sources=sources, nfft=4096, depth=6)
 
     state_dict = torch.load(state_dict_path, weights_only=True)
     model.load_state_dict(state_dict)
@@ -40,7 +41,7 @@ def torch_model():
     return model
 
     
-def test_groupnorm(torch_model: HDemucs):
+def test_groupnorm(torch_model: TorchHDemucs):
     torch_groupnorm = torch_model.freq_encoder[0].dconv.layers[0][1]
 
     CHANNELS = 12
@@ -61,7 +62,7 @@ def test_groupnorm(torch_model: HDemucs):
     assert jnp.allclose(y.detach().numpy(), nnx_y, atol=TOL), f"difference: {diff}"
 
     
-def test_conv1d(torch_model: HDemucs):
+def test_conv1d(torch_model: TorchHDemucs):
     torch_conv1d = torch_model.freq_encoder[0].dconv.layers[0][0]
 
     x = torch.randn(1, 48, 1) # (batch_size, channels, time_steps)
@@ -81,7 +82,7 @@ def test_conv1d(torch_model: HDemucs):
     assert jnp.allclose(y.detach().numpy(), nnx_y), f"difference: {diff}"
 
     
-def test_torchconv(torch_model: HDemucs):
+def test_torchconv(torch_model: TorchHDemucs):
     torch_conv = torch_model.freq_encoder[0].dconv.layers[0][0]
 
     x = torch.randn(1, 48, 1)
@@ -100,7 +101,7 @@ def test_torchconv(torch_model: HDemucs):
     assert jnp.allclose(y.detach().numpy(), nnx_y), f"difference: {diff}"
 
 
-def test_scaled_embedding(torch_model: HDemucs):
+def test_scaled_embedding(torch_model: TorchHDemucs):
 
     torch_scaled_embedding = torch_model.freq_emb
     x = torch.randint(0, 512, (10,))
@@ -118,7 +119,7 @@ def test_scaled_embedding(torch_model: HDemucs):
     assert jnp.allclose(y.detach().numpy(), nnx_y), f"y: {y.detach().numpy()}, nnx_y: {nnx_y}"
 
 
-def test_layer_scale(torch_model: HDemucs):
+def test_layer_scale(torch_model: TorchHDemucs):
 
     torch_layer_scale = torch_model.freq_encoder[0].dconv.layers[0][-1]
 
@@ -138,7 +139,7 @@ def test_layer_scale(torch_model: HDemucs):
 
 
 @pytest.mark.parametrize("layer_idx", [4, 5])
-def test_local_state(torch_model: HDemucs, layer_idx: int):
+def test_local_state(torch_model: TorchHDemucs, layer_idx: int):
 
     torch_local_state = torch_model.freq_encoder[layer_idx].dconv.layers[0][4]
 
@@ -182,7 +183,7 @@ def test_bidirectional_lstm_toy():
 
 
 @pytest.mark.parametrize("layer_idx", [4, 5])
-def test_bidirectional_lstm(torch_model: HDemucs, layer_idx: int):
+def test_bidirectional_lstm(torch_model: TorchHDemucs, layer_idx: int):
     torch_lstm = torch_model.freq_encoder[layer_idx].dconv.layers[0][3].lstm
 
     C = torch_lstm.input_size
@@ -206,7 +207,7 @@ def test_bidirectional_lstm(torch_model: HDemucs, layer_idx: int):
 
 
 @pytest.mark.parametrize("layer_idx", [4, 5])
-def test_blstm(torch_model: HDemucs, layer_idx: int):
+def test_blstm(torch_model: TorchHDemucs, layer_idx: int):
     torch_blstm = torch_model.freq_encoder[layer_idx].dconv.layers[0][3]
 
     B, C, T = (2, 192, 3) if layer_idx == 4 else (2, 384, 3)
@@ -227,7 +228,7 @@ def test_blstm(torch_model: HDemucs, layer_idx: int):
 
 
 @pytest.mark.parametrize("layer_idx", [0, 4]) # add 4 as test case
-def test_dconv(torch_model: HDemucs, layer_idx: int):
+def test_dconv(torch_model: TorchHDemucs, layer_idx: int):
     torch_dconv = torch_model.freq_encoder[layer_idx].dconv
 
     # add_print_hook(torch_dconv)
@@ -262,7 +263,7 @@ def test_dconv(torch_model: HDemucs, layer_idx: int):
         (5, (1, 768, 1, 1)),  # Last freq encoder layer
     ]
 )
-def test_freq_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
+def test_freq_henc_layer(torch_model: TorchHDemucs, layer_idx: int, shape: tuple):
     torch_henc_layer = torch_model.freq_encoder[layer_idx]
 
     # add_print_hook(torch_henc_layer)
@@ -347,7 +348,7 @@ def test_freq_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
         (4, (1, 384, 2)),  # Fifth time encoder layer (empty layer)
     ]
 )
-def test_time_henc_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
+def test_time_henc_layer(torch_model: TorchHDemucs, layer_idx: int, shape: tuple):
     torch_henc_layer = torch_model.time_encoder[layer_idx]
 
     # add_print_hook(torch_henc_layer)
@@ -570,7 +571,7 @@ def test_transposed_conv2d(
         (5, (1, 48, 512, 1)), # (batch_size, channels, freqs, length)
     ]
 )
-def test_freq_hdec_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
+def test_freq_hdec_layer(torch_model: TorchHDemucs, layer_idx: int, shape: tuple):
     torch_decoder_layer = torch_model.freq_decoder[layer_idx]
 
     torch_add_print_hook(torch_decoder_layer)
@@ -663,7 +664,7 @@ def test_freq_hdec_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
     (3, (1, 96, 1)),
     (4, (1, 48, 1)),
 ])
-def test_time_hdec_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
+def test_time_hdec_layer(torch_model: TorchHDemucs, layer_idx: int, shape: tuple):
     torch_decoder_layer = torch_model.time_decoder[layer_idx]
 
     logger.info(f"torch_decoder_layer.pad: {torch_decoder_layer.pad}")
@@ -759,3 +760,60 @@ def test_time_hdec_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
     diff2 = jnp.linalg.norm(z.detach().numpy() - nnx_z)
     logger.info(f"Time Decoder Layer (layer {layer_idx}) diff2: {diff2}")
     assert jnp.allclose(z.detach().numpy(), nnx_z, atol=TOL), f"l2 norm: {diff2:.6f}"
+
+
+def test_hdemucs_setup(torch_model: TorchHDemucs):
+    sources = ["drums", "bass", "other", "vocals"]
+    flax_model = HDemucs(sources=sources, nfft=4096, depth=6, rngs=nnx.Rngs(0))
+
+    logger.info(flax_model)
+
+    assert len(flax_model.freq_encoder) == len(torch_model.freq_encoder)
+    assert len(flax_model.time_encoder) == len(torch_model.time_encoder)
+    assert len(flax_model.freq_decoder) == len(torch_model.freq_decoder)
+    assert len(flax_model.time_decoder) == len(torch_model.time_decoder)
+
+
+def test_hdemucs_forward(torch_model: TorchHDemucs):
+    sources = ["drums", "bass", "other", "vocals"]
+    flax_model = HDemucs(sources=sources, nfft=4096, depth=6, rngs=nnx.Rngs(0))
+
+    x = torch.randn(1, 2, 44100)
+
+    with torch.no_grad():
+        y = torch_model(x)
+
+    with intercept_methods(print_shapes_hook):
+        y_flax = flax_model(x.detach().numpy())
+
+    assert y.shape == y_flax.shape, f"y shape: {y.shape} must match y_flax shape: {y_flax.shape}"
+
+    diff = jnp.linalg.norm(y.detach().numpy() - y_flax)
+    logger.info(f"HDemucs forward diff: {diff}")
+    assert jnp.allclose(y.detach().numpy(), y_flax, atol=TOL), f"l2 norm: {diff:.6f}"
+
+
+from torchaudio.models._hdemucs import _spectro
+@pytest.mark.parametrize(
+    "hop_length, shape", [
+        (128, (1, 2, 44100)),
+        (256, (1, 2, 22050)),
+    ]
+)
+def test_calc_spectrogram(hop_length: int, shape: tuple):
+    x = torch.randn(*shape)
+    
+    # PyTorch version
+    z_torch = _spectro(x, hop_length=hop_length)
+   
+    # JAX version
+    z_jax = calc_spectrogram(x.detach().numpy(), hop_length=hop_length)
+   
+    # Print difference statistics
+    diff = z_torch.detach().numpy() - z_jax
+
+    assert z_torch.shape == z_jax.shape, f"z_torch shape: {z_torch.shape} must match z_jax shape: {z_jax.shape}"
+
+    diff = jnp.linalg.norm(z_torch.detach().numpy() - z_jax)
+    logger.info(f"calc_spectrogram diff: {diff}")
+    assert jnp.allclose(z_torch.detach().numpy(), z_jax, atol=TOL), f"l2 norm: {diff:.6f}"

@@ -8,6 +8,8 @@ Flax implementation of HDemucs audio source separation model
   - [ ] Utility tests
   - [ ] e2e-tests
   - [ ] Numerical diff test
+  - [ ] JIT-compilation tests
+  - [ ] Speed comparison
 - [x] ScaledEmbedding
 - [x] _HencLayer
   - [x] Time-tests

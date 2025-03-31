@@ -3,7 +3,9 @@ from jax import Array
 import jax.numpy as jnp
 import jax.nn as nn
 from functools import partial
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, List
+import math
+import jax.scipy.signal as jsig
 
 from conv import TransposedConv1d, TransposedConv2d
 from module import Module
@@ -22,6 +24,9 @@ class ScaledEmbedding(Module):
     ):
         self.embedding = nnx.Embed(n_emb, emb_dim, rngs=rngs)
         self.scale = scale
+
+        # Don't care about 'smooth' initialization here
+        # since we only support inference
 
     def __call__(self, x: Array) -> Array:
         """
@@ -544,3 +549,182 @@ def _get_norm_fn(norm_type: str, *args, **kwargs):
     if norm_type == "group_norm":
         return lambda d: TorchGroupNorm(num_features=d, *args, **kwargs)
     else: return lambda d: Identity()
+
+
+class HDemucs(Module):
+    def __init__(
+        self,
+        sources: List[str],
+        audio_channels: int = 2,
+        channels: int = 48,
+        growth: int = 2,
+        nfft: int = 4096,
+        depth: int = 6,
+        freq_emb: float = 0.2,
+        emb_scale: int = 10,
+        kernel_size: int = 8,
+        time_stride: int = 2,
+        stride: int = 4,
+        context: int = 1,
+        context_enc: int = 0,
+        norm_starts: int = 4,
+        norm_groups: int = 4,
+        dconv_depth: int = 2,
+        dconv_comp: int = 4,
+        dconv_attn: int = 4,
+        dconv_lstm: int = 4,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.sources = sources
+        self.audio_channels = audio_channels
+        self.channels = channels
+        self.nfft = nfft
+        self.depth = depth
+
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.context = context
+
+        self.hop_length = self.nfft // 4
+        self.freq_emb: ScaledEmbedding = None # embedding layer
+
+        self.freq_encoder = []
+        self.freq_decoder = []
+
+        self.time_encoder = []
+        self.time_decoder = []
+
+        chin = audio_channels
+        chin_z = chin * 2 # number of channels for the freq branch
+        chout = channels
+        chout_z = channels
+        freqs = self.nfft // 2
+
+        for index in range(self.depth):
+            lstm = index >= dconv_lstm
+            attn = index >= dconv_attn
+            norm_type = "group_norm" if index >= norm_starts else "none"
+            freq = freqs > 1
+            stri = stride
+            ker = kernel_size
+            if not freq:
+                if freqs != 1:
+                    raise ValueError("When freq is false, freqs must be 1.")
+                ker = time_stride * 2
+                stri = time_stride
+
+            pad = True
+            last_freq = False
+            if freq and freqs <= kernel_size:
+                ker = freqs
+                pad = False
+                last_freq = True
+
+            kw = {
+                "kernel_size": ker,
+                "stride": stri,
+                "freq": freq,
+                "pad": pad,
+                "norm_type": norm_type,
+                "norm_groups": norm_groups,
+                "dconv_kw": {
+                    "lstm": lstm,
+                    "attn": attn,
+                    "depth": dconv_depth,
+                    "compress": dconv_comp,
+                    # "init": dconv_init,
+                },
+            }
+            kwt = dict(kw)
+            kwt["freq"] = 0
+            kwt["kernel_size"] = kernel_size
+            kwt["stride"] = stride
+            kwt["pad"] = True
+            kw_dec = dict(kw)
+
+            if last_freq:
+                chout_z = max(chout, chout_z)
+                chout = chout_z
+
+            enc = HybridEncoderLayer(chin_z, chout_z, context=context_enc, **kw, rngs=rngs)
+            if freq:
+                if last_freq is True and nfft == 2048:
+                    kwt["stride"] = 2
+                    kwt["kernel_size"] = 4
+                tenc = HybridEncoderLayer(chin, chout, context=context_enc, empty=last_freq, **kwt, rngs=rngs)
+                self.time_encoder.append(tenc)
+
+            self.freq_encoder.append(enc)
+            if index == 0:
+                chin = self.audio_channels * len(self.sources)
+                chin_z = chin * 2
+            dec = HybridDecoderLayer(chout_z, chin_z, last=(index == 0), context=context, **kw_dec, rngs=rngs)
+            if freq:
+                tdec = HybridDecoderLayer(chout, chin, empty=last_freq, last=(index == 0), context=context, **kwt, rngs=rngs)
+                self.time_decoder.insert(0, tdec)
+            self.freq_decoder.insert(0, dec)
+
+            chin = chout
+            chin_z = chout_z
+            chout = int(growth * chout)
+            chout_z = int(growth * chout_z)
+            if freq:
+                if freqs <= kernel_size:
+                    freqs = 1
+                else:
+                    freqs //= stride
+            if index == 0 and freq_emb:
+                self.freq_emb = ScaledEmbedding(freqs, chin_z, scale=emb_scale, rngs=rngs)
+                self.freq_emb_scale = freq_emb
+
+    def __call__(self, input: Array) -> Array:
+        """
+        Args:
+            input: (batch_size, channels, time_steps)
+        Returns:
+            (batch_size, num_sources, channels, time_steps)
+        """
+        # input goes into two branches, frequency and time
+        
+        # transform input for freq branch
+
+        x = input
+        length = x.shape[-1]
+
+        z = self._spec(input)
+        mag = self._magnitude(z)
+        x = mag
+        
+
+    def _spec(self, x: Array) -> Array:
+        """
+        Args:
+            x: (batch_size, channels, time_steps)
+        Returns:
+            (batch_size, channels, freqs, time_steps)
+        """
+        # pad input to make sure its fft is same length
+        # as input for simplicity
+        length = x.shape[-1]
+
+        le = int(math.ceil(length / self.hop_length))
+        pad = self.hop_length // 2 * 3
+
+        pad_left = pad
+        pad_right = pad + le * self.hop_length - x.shape[-1]
+
+        x = self._pad(x, pad_left, pad_right)
+
+
+    def _pad(self, x: Array, pad_left: int, pad_right: int) -> Array:
+        length = x.shape[-1]
+        reflect_pad_dims = [(0, 0), (0, 0), (pad_left, pad_right)]
+
+        max_pad = max(pad_left, pad_right)
+        if length <= max_pad:
+            padding_dims = [(0, 0), (0, 0), (0, max_pad - length + 1)]
+            x = jnp.pad(x, padding_dims, mode="constant", constant_values=0.0)
+        return jnp.pad(x, reflect_pad_dims, mode="reflect")
+
+    
