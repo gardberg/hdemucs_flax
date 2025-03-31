@@ -654,3 +654,67 @@ def test_freq_hdec_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
     diff2 = jnp.linalg.norm(z.detach().numpy() - nnx_z)
     logger.info(f"Freq Decoder Layer (layer {layer_idx}) diff2: {diff2}")
     assert jnp.allclose(z.detach().numpy(), nnx_z, atol=TOL), f"l2 norm: {diff2:.6f}"
+
+
+@pytest.mark.parametrize("layer_idx, shape", [
+    (0, (1, 768, 1)), # (batch_size, channels, length)
+])
+def test_time_hdec_layer(torch_model: HDemucs, layer_idx: int, shape: tuple):
+    torch_decoder_layer = torch_model.time_decoder[layer_idx]
+
+    logger.info(f"torch_decoder_layer.pad: {torch_decoder_layer.pad}")
+    logger.info(f"torch_decoder_layer.last: {torch_decoder_layer.last}")
+    logger.info(f"torch_decoder_layer.freq: {torch_decoder_layer.freq}")
+    logger.info(f"torch_decoder_layer.empty: {torch_decoder_layer.empty}")
+
+    torch_add_print_hook(torch_decoder_layer)
+
+    x = torch.randn(*shape)
+    skip = torch.randn(*shape) if layer_idx != 0 else None
+    length = x.shape[-1]
+
+    with torch.no_grad():
+        z, y = torch_decoder_layer(x, skip, length)
+
+    logger.info(f"y shape: {y.shape}, z shape: {z.shape}")
+
+    # flax
+    param_map = {
+        0: {
+            "in_channels": 768,
+            "out_channels": 384,
+            "kernel_size": 8,
+            "stride": 4,
+            "norm_groups": 4,
+            "norm_type": "group_norm",
+            "freq": False,
+            "last": False,
+            "pad": True,
+            "empty": True,
+        }
+    }
+
+    nnx_decoder_layer = HybridDecoderLayer(
+        **param_map[layer_idx],
+        rngs=nnx.Rngs(0)
+    )
+
+    nnx_decoder_layer = copy_torch_params(torch_decoder_layer, nnx_decoder_layer)
+
+    x_jnp = x.detach().numpy()
+    skip_jnp = skip.detach().numpy() if skip is not None else None
+
+    with intercept_methods(print_shapes_hook):
+        nnx_z, nnx_y = nnx_decoder_layer(x_jnp, skip_jnp, length)
+
+    logger.info(f"nnx_y shape: {nnx_y.shape}, nnx_z shape: {nnx_z.shape}")
+    
+    assert y.shape == nnx_y.shape, f"y shape: {y.shape} must match nnx_y shape: {nnx_y.shape}"
+
+    diff = jnp.linalg.norm(y.detach().numpy() - nnx_y)
+    logger.info(f"Time Decoder Layer (layer {layer_idx}) diff: {diff}")
+    assert jnp.allclose(y.detach().numpy(), nnx_y, atol=TOL), f"l2 norm: {diff:.6f}"
+
+    diff2 = jnp.linalg.norm(z.detach().numpy() - nnx_z)
+    logger.info(f"Time Decoder Layer (layer {layer_idx}) diff2: {diff2}")
+    assert jnp.allclose(z.detach().numpy(), nnx_z, atol=TOL), f"l2 norm: {diff2:.6f}"
