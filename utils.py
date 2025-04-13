@@ -1,7 +1,6 @@
 import torch
 from flax import nnx
 import jax.numpy as jnp
-import jax.scipy.signal as jsig
 from jax import Array
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, Identity, TorchConv, TorchConv2d, HybridDecoderLayer
 
@@ -11,8 +10,6 @@ from conv import TransposedConv1d, TransposedConv2d
 from module import Module
 
 import logging
-
-import scipy.signal
 
 logger = logging.getLogger(__name__)
 logging.getLogger('jax').setLevel(logging.WARNING)
@@ -303,43 +300,3 @@ def print_shapes_hook(next_fun, args, kwargs, context):
     
     print(f"{'='*80}\n")
     return output
-
-
-# Signal stuff
-def calc_spectrogram(x: Array, n_fft: int = 512, hop_length: int = 128, pad: int = 0) -> Array:
-    """
-    Args:
-        x: (batch_size, channels, time_steps)
-    Returns:
-        (batch_size, channels, freqs, time_steps)
-    """
-    length = x.shape[-1]
-    remaining_dims = x.shape[:-1]
-    x = x.reshape(-1, length)
-    
-    nperseg = n_fft * (1 + pad)  # equivalent to win_length in torch
-    noverlap = nperseg - hop_length
-
-    # First apply reflection padding ourselves since JAX STFT doesn't support it
-    pad_size = nperseg // 2
-    x = jnp.pad(x, ((0, 0), (pad_size, pad_size)), mode='reflect')
-
-    # Compute STFT
-    _, _, z = jsig.stft(
-        x,
-        fs=1.0,
-        window='hann',  
-        nperseg=nperseg,
-        noverlap=noverlap,
-        nfft=nperseg,
-        boundary=None,
-        padded=False,
-        return_onesided=True,
-    )
-
-    z = z * jnp.sqrt(nperseg) * 0.5 # match pytorch normalization
-
-    # Reshape output back to match input dimensions
-    freqs = z.shape[1]
-    frames = z.shape[2]
-    return z.reshape(*remaining_dims, freqs, frames)

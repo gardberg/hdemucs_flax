@@ -1,13 +1,14 @@
 import pytest
 from torchaudio.models import HDemucs as TorchHDemucs
+from torchaudio.models._hdemucs import _spectro, _ispectro
 import torch
 import jax.numpy as jnp
 from flax import nnx
 import logging
-import numpy as np
 
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, TorchConv, HybridEncoderLayer, HybridDecoderLayer, HDemucs
-from utils import copy_torch_params, print_shapes_hook, calc_spectrogram
+from utils import copy_torch_params, print_shapes_hook
+from audio_utils import signal_to_spectrogram, spectrogram_to_signal, complex_spec_to_real, real_spec_to_complex
 from conv import TransposedConv1d, TransposedConv2d
 
 from module import intercept_methods
@@ -774,6 +775,7 @@ def test_hdemucs_setup(torch_model: TorchHDemucs):
     assert len(flax_model.time_decoder) == len(torch_model.time_decoder)
 
 
+# NOTE: Currently failing because of ispec
 def test_hdemucs_forward(torch_model: TorchHDemucs):
     sources = ["drums", "bass", "other", "vocals"]
     flax_model = HDemucs(sources=sources, nfft=4096, depth=6, rngs=nnx.Rngs(0))
@@ -783,8 +785,8 @@ def test_hdemucs_forward(torch_model: TorchHDemucs):
     with torch.no_grad():
         y = torch_model(x)
 
-    with intercept_methods(print_shapes_hook):
-        y_flax = flax_model(x.detach().numpy())
+    # with intercept_methods(print_shapes_hook):
+    y_flax = flax_model(x.detach().numpy())
 
     assert y.shape == y_flax.shape, f"y shape: {y.shape} must match y_flax shape: {y_flax.shape}"
 
@@ -793,21 +795,85 @@ def test_hdemucs_forward(torch_model: TorchHDemucs):
     assert jnp.allclose(y.detach().numpy(), y_flax, atol=TOL), f"l2 norm: {diff:.6f}"
 
 
-from torchaudio.models._hdemucs import _spectro
+"""Spectrogram related tests
+NOTE: Call order is:
+(torch)
+_spec
+    _spectro
+        torch.stft
+_magnitude
+...
+_mask
+_ispec
+    _ispectro
+        torch.istft
+
+(flax)
+_spec
+    signal_to_spectrogram
+        jsig.stft
+complex_spec_to_real
+...
+real_spec_to_complex
+_ispec
+    spectrogram_to_signal
+        jsig.istft
+"""
+
+@pytest.mark.parametrize("shape", [
+    (1, 2, 16, 100),
+    (1, 2, 8, 20),
+])
+def test_complex_spec_to_real(torch_model: TorchHDemucs, shape: tuple):
+    x = torch.randn(*shape, dtype=torch.complex64)
+
+    with torch.no_grad():
+        z_torch = torch_model._magnitude(x)
+
+    z_jax = complex_spec_to_real(x.detach().numpy())
+
+    assert z_torch.shape == z_jax.shape, f"z_torch shape: {z_torch.shape} must match z_jax shape: {z_jax.shape}"
+
+    diff = jnp.linalg.norm(z_torch.detach().numpy() - z_jax)
+    logger.info(f"complex_spec_to_real diff: {diff}")
+    assert jnp.allclose(z_torch.detach().numpy(), z_jax, atol=TOL), f"l2 norm: {diff:.6f}"
+
+
+@pytest.mark.parametrize("shape", [
+    (1, 2, 2, 16, 100),
+    (1, 2, 4, 8, 50),
+])
+def test_real_spec_to_complex(torch_model: TorchHDemucs, shape: tuple):
+    x = torch.randn(*shape, dtype=torch.float32)
+
+    with torch.no_grad():
+        z_torch = torch_model._mask(x)
+
+    z_jax = real_spec_to_complex(x.detach().numpy())
+
+    assert z_torch.shape == z_jax.shape, f"z_torch shape: {z_torch.shape} must match z_jax shape: {z_jax.shape}"
+
+    diff = jnp.linalg.norm(z_torch.detach().numpy() - z_jax)
+    logger.info(f"real_spec_to_complex diff: {diff}")
+    assert jnp.allclose(z_torch.detach().numpy(), z_jax, atol=TOL), f"l2 norm: {diff:.6f}"
+
+
+
+# corresponds to _spectro
 @pytest.mark.parametrize(
     "hop_length, shape", [
         (128, (1, 2, 44100)),
         (256, (1, 2, 22050)),
     ]
 )
-def test_calc_spectrogram(hop_length: int, shape: tuple):
+def test_signal_to_spectrogram(hop_length: int, shape: tuple):
     x = torch.randn(*shape)
     
     # PyTorch version
     z_torch = _spectro(x, hop_length=hop_length)
    
     # JAX version
-    z_jax = calc_spectrogram(x.detach().numpy(), hop_length=hop_length)
+    z_jax = signal_to_spectrogram(x.detach().numpy(), hop_length=hop_length)
    
     # Print difference statistics
     diff = z_torch.detach().numpy() - z_jax
@@ -815,5 +881,81 @@ def test_calc_spectrogram(hop_length: int, shape: tuple):
     assert z_torch.shape == z_jax.shape, f"z_torch shape: {z_torch.shape} must match z_jax shape: {z_jax.shape}"
 
     diff = jnp.linalg.norm(z_torch.detach().numpy() - z_jax)
-    logger.info(f"calc_spectrogram diff: {diff}")
+    logger.info(f"signal_to_spectrogram diff: {diff}")
     assert jnp.allclose(z_torch.detach().numpy(), z_jax, atol=TOL), f"l2 norm: {diff:.6f}"
+
+
+# corresponds to _ispectro
+@pytest.mark.parametrize(
+    "hop_length, shape", [
+        (10, (1, 2, 16, 100)),  # (batch_size, channels, freqs, time_steps)
+        # (10, (1, 2, 16, 50)),
+    ]
+)
+def test_spectrogram_to_signal(hop_length: int, shape: tuple):
+    z = torch.randn(*shape, dtype=torch.complex64)
+
+    # NOTE: Which lengths are used in forward pass?
+    length = 50
+
+    with torch.no_grad():
+        x_torch = _ispectro(z, hop_length=hop_length, length=length)
+
+    x_jax = spectrogram_to_signal(z.detach().numpy(), hop_length=hop_length, length=length)
+
+    assert x_torch.shape == x_jax.shape, f"x_torch shape: {x_torch.shape} must match x_jax shape: {x_jax.shape}"
+
+    diff = jnp.linalg.norm(x_torch.detach().numpy() - x_jax)
+    logger.info(f"spectrogram_to_signal diff: {diff}")
+    assert jnp.allclose(x_torch.detach().numpy(), x_jax, atol=TOL), f"l2 norm: {diff:.6f}"
+
+
+@pytest.mark.parametrize("shape", [
+    (1, 2, 44100),
+    (1, 2, 22050),
+])
+def test_hdemucs_spec(torch_model: TorchHDemucs, shape: tuple):
+    sources = ["drums", "bass", "other", "vocals"]
+    flax_model = HDemucs(sources=sources, nfft=4096, depth=6, rngs=nnx.Rngs(0))
+
+    x = torch.randn(*shape)
+    
+    with torch.no_grad():
+        z_torch = torch_model._spec(x)
+
+    with intercept_methods(print_shapes_hook):
+        z_flax = flax_model._spec(x.detach().numpy())
+
+    assert z_torch.shape == z_flax.shape, f"z_torch shape: {z_torch.shape} must match z_flax shape: {z_flax.shape}"
+
+    diff = jnp.linalg.norm(z_torch.detach().numpy() - z_flax)
+    logger.info(f"hdemucs_spec diff: {diff}")
+    assert jnp.allclose(z_torch.detach().numpy(), z_flax, atol=TOL), f"l2 norm: {diff:.6f}"
+
+
+
+@pytest.mark.parametrize("shape", [
+    (1, 4, 2, 2048, 100), # (batch_size, extra_dim, channels, freqs, time_steps)
+    (1, 4, 2, 2048, 50),
+    (2, 8, 2, 2048, 50),
+])
+def test_hdemucs_ispec(torch_model: TorchHDemucs, shape: tuple):
+    sources = ["drums", "bass", "other", "vocals"]
+    flax_model = HDemucs(sources=sources, nfft=4096, depth=6, rngs=nnx.Rngs(0))
+
+    x = torch.randn(*shape, dtype=torch.complex64)
+    length = x.shape[-1]
+    
+    with torch.no_grad():
+        z_torch = torch_model._ispec(x, length)
+
+    # with intercept_methods(print_shapes_hook):
+    z_flax = flax_model._ispec(x.detach().numpy(), length)
+
+    assert z_torch.shape == z_flax.shape, f"z_torch shape: {z_torch.shape} must match z_flax shape: {z_flax.shape}"
+
+    diff = jnp.linalg.norm(z_torch.detach().numpy() - z_flax)
+    logger.info(f"hdemucs_ispec diff: {diff}")
+    assert jnp.allclose(z_torch.detach().numpy(), z_flax, atol=TOL), f"l2 norm: {diff:.6f}"
+
+

@@ -8,6 +8,7 @@ import math
 import jax.scipy.signal as jsig
 
 from conv import TransposedConv1d, TransposedConv2d
+from audio_utils import signal_to_spectrogram, spectrogram_to_signal, complex_spec_to_real, real_spec_to_complex
 from module import Module
 
 import logging
@@ -601,6 +602,8 @@ class HDemucs(Module):
         chout_z = channels
         freqs = self.nfft // 2
 
+        self.epsilon = 1e-5 # for normalization
+
         for index in range(self.depth):
             lstm = index >= dconv_lstm
             attn = index >= dconv_attn
@@ -692,17 +695,108 @@ class HDemucs(Module):
         x = input
         length = x.shape[-1]
 
+        print(f"input.shape: {input.shape}")
         z = self._spec(input)
-        mag = self._magnitude(z)
+        print(f"z.shape: {z.shape}")
+        mag = complex_spec_to_real(z)
+        print(f"mag.shape: {mag.shape}")
         x = mag
-        
 
+        B, C, F, T = x.shape
+
+        # normalize input to freq branch
+        mean = x.mean(axis=(1, 2, 3), keepdims=True)
+        std = x.std(axis=(1, 2, 3), keepdims=True)
+        x = (x - mean) / (self.epsilon + std)
+
+        # normalize input to time branch
+        xt = input
+        xt_mean = xt.mean(axis=(1, 2), keepdims=True)
+        xt_std = xt.std(axis=(1, 2), keepdims=True)
+        xt = (xt - xt_mean) / (self.epsilon + xt_std)
+
+        saved = []  # skip connections, freq.
+        saved_t = []  # skip connections, time.
+        lengths: List[int] = []  # saved lengths to properly remove padding, freq branch.
+        lengths_t: List[int] = []  # saved lengths for time branch.
+
+        # encode both freq and time input
+        for idx, encode in enumerate(self.freq_encoder):
+            lengths.append(x.shape[-1])
+            inject = None
+            if idx < len(self.time_encoder):
+                lengths_t.append(xt.shape[-1])
+                tenc: HybridEncoderLayer = self.time_encoder[idx]
+                xt = tenc(xt)
+
+                if not tenc.empty:
+                    saved_t.append(xt)
+                else:
+                    inject = xt
+            x: Array = encode(x, inject)
+            
+            if idx == 0 and self.freq_emb is not None:
+                frs = jnp.arange(x.shape[-2], dtype=jnp.int32)
+                emb = self.freq_emb(frs)
+
+                # NOTE: this returns a view, could this be problem?
+                emb = jnp.broadcast_to(emb.transpose()[None, :, :, None], x.shape)
+                x = x + self.freq_emb_scale * emb
+
+            saved.append(x)
+
+        x = jnp.zeros_like(x)
+        xt = jnp.zeros_like(x)
+
+        # decode both freq and time
+        for idx, decode in enumerate(self.freq_decoder):
+            skip = saved.pop(-1)
+            x, pre = decode(x, skip, lengths.pop(-1))
+
+            offset = self.depth - len(self.time_decoder)
+            if idx >= offset:
+                tdec: HybridDecoderLayer = self.time_decoder[idx - offset]
+                length_t = lengths_t.pop(-1)
+                if tdec.empty:
+                    if pre.shape[2] != 1:
+                        raise ValueError("Length mismatch")
+                    pre = pre[:, :, 0]
+                    xt, _ = tdec(pre, None, length_t)
+                else:
+                    skip = saved_t.pop(-1)
+                    xt, _ = tdec(xt, skip, length_t)
+
+        if len(saved) != 0:
+            raise AssertionError("saved is not empty")
+        if len(lengths_t) != 0:
+            raise AssertionError("lengths_t is not empty")
+        if len(saved_t) != 0:
+            raise AssertionError("saved_t is not empty")
+
+        S = len(self.sources)
+        x = x.reshape(B, S, -1, F, T)
+        x = x * std[:, None] + mean[:, None]
+
+        print(f"x.shape: {x.shape}")
+        zout = real_spec_to_complex(x)
+        print(f"zout.shape: {zout.shape}")
+        x = self._ispec(zout, length)
+        print(f"x.shape: {x.shape}")
+
+        xt = xt.reshape(B, S, -1, length)
+        xt = xt * xt_std[:, None] + xt_mean[:, None]
+        x = xt + x
+        return x
+            
+            
     def _spec(self, x: Array) -> Array:
         """
+        Pad and convert signal to spectrogram
+
         Args:
             x: (batch_size, channels, time_steps)
         Returns:
-            (batch_size, channels, freqs, time_steps)
+            spectrogram: (batch_size, channels, freqs, time_steps)
         """
         # pad input to make sure its fft is same length
         # as input for simplicity
@@ -715,6 +809,39 @@ class HDemucs(Module):
         pad_right = pad + le * self.hop_length - x.shape[-1]
 
         x = self._pad(x, pad_left, pad_right)
+
+        z = signal_to_spectrogram(x, n_fft=self.nfft, hop_length=self.hop_length)
+
+        z = z[..., :-1, :] # NOTE: Why? Discard padded zeros to keep consistent shape?
+
+        # TODO: Is this JIT-compilable?
+        if z.shape[-1] != le + 4:
+            raise ValueError("Spectrogram's last dimension must be 4 + input size divided by stride")
+
+        z = z[..., 2 : 2 + le] # NOTE: Why?
+
+        return z
+
+    def _ispec(self, z: Array, length: int) -> Array:
+        """
+        Pad and convert spectrogram to signal
+
+        Args:
+            z: (batch_size, extra_dim, channels, freqs, time_steps)
+            length: int
+        Returns:
+            (batch_size, extra_dim, channels, time_steps)
+        """
+        # Pad second to last dim with 1 on the right
+        z = jnp.pad(z, ((0, 0), (0, 0), (0, 0), (0, 1), (0, 0)))
+        # Pad last dim with 2 on both sides
+        z = jnp.pad(z, ((0, 0), (0, 0), (0, 0), (0, 0), (2, 2)))
+        pad = self.hop_length // 2 * 3
+        le = self.hop_length * int(math.ceil(length / self.hop_length)) + 2 * pad
+
+        x = spectrogram_to_signal(z, self.hop_length, length=le)
+        x = x[..., pad : pad + length]
+        return x
 
 
     def _pad(self, x: Array, pad_left: int, pad_right: int) -> Array:
