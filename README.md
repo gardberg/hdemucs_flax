@@ -4,6 +4,8 @@ Flax implementation of HDemucs audio source separation model
 
 ## TODO
 
+Currently full fw pass is running, but getting diff. Have added logs for both flax and torch. Seems like there's a diff early? Bug in flax forward implementation?
+
 - [ ] HDemucs
   - [ ] Utility tests
   - [ ] e2e-tests

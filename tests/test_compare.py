@@ -7,10 +7,10 @@ from flax import nnx
 import logging
 
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, TorchConv, HybridEncoderLayer, HybridDecoderLayer, HDemucs
-from utils import copy_torch_params, print_shapes_hook
+from utils import copy_torch_params, get_print_hook, print_shapes_hook
 from audio_utils import signal_to_spectrogram, spectrogram_to_signal, complex_spec_to_real, real_spec_to_complex
 from conv import TransposedConv1d, TransposedConv2d
-
+import torchaudio
 from module import intercept_methods
 from torch_utils import torch_add_print_hook
 
@@ -109,9 +109,12 @@ def test_scaled_embedding(torch_model: TorchHDemucs):
     y = torch_scaled_embedding(x)
 
     # flax
-    nnx_scaled_embedding = ScaledEmbedding(512, 48, scale=1.0, rngs=nnx.Rngs(0))
+    nnx_scaled_embedding = ScaledEmbedding(512, 48, scale=torch_scaled_embedding.scale, rngs=nnx.Rngs(0))
 
     nnx_scaled_embedding = copy_torch_params(torch_scaled_embedding, nnx_scaled_embedding)
+
+    assert nnx_scaled_embedding.scale == torch_scaled_embedding.scale
+    assert jnp.allclose(nnx_scaled_embedding.embedding.embedding.value, jnp.array(torch_scaled_embedding.embedding.weight.data))
 
     nnx_y = nnx_scaled_embedding(x.detach().numpy())
 
@@ -775,24 +778,96 @@ def test_hdemucs_setup(torch_model: TorchHDemucs):
     assert len(flax_model.time_decoder) == len(torch_model.time_decoder)
 
 
-# NOTE: Currently failing because of ispec
-def test_hdemucs_forward(torch_model: TorchHDemucs):
+def test_hdemucs_copy(torch_model: TorchHDemucs):
     sources = ["drums", "bass", "other", "vocals"]
     flax_model = HDemucs(sources=sources, nfft=4096, depth=6, rngs=nnx.Rngs(0))
 
-    x = torch.randn(1, 2, 44100)
+    flax_model = copy_torch_params(torch_model, flax_model)
+
+    assert len(flax_model.freq_encoder) == len(torch_model.freq_encoder)
+    assert len(flax_model.time_encoder) == len(torch_model.time_encoder)
+    assert len(flax_model.freq_decoder) == len(torch_model.freq_decoder)
+    assert len(flax_model.time_decoder) == len(torch_model.time_decoder)
+
+    flax_freq_emb_weight = flax_model.freq_emb.embedding.embedding.value
+    torch_freq_emb_weight = torch_model.freq_emb.embedding.weight.data
+    print(f"flax_freq_emb_weight shape: {flax_freq_emb_weight.shape}, torch_freq_emb_weight shape: {torch_freq_emb_weight.shape}")
+    assert flax_freq_emb_weight.shape == torch_freq_emb_weight.shape
+
+    diff = jnp.linalg.norm(flax_freq_emb_weight - torch_freq_emb_weight.numpy())
+    print(f"flax_freq_emb_weight diff: {diff}")
+    assert jnp.allclose(flax_freq_emb_weight, torch_freq_emb_weight.numpy(), atol=TOL), f"l2 norm: {diff:.6f}"
+
+
+
+@pytest.mark.parametrize("shape", [
+    (1, 2, 22050),
+    (1, 2, 44100),
+    (1, 2, 180000),
+])
+def test_hdemucs_forward(torch_model: TorchHDemucs, shape: tuple):
+    sources = ["drums", "bass", "other", "vocals"]
+    flax_model = HDemucs(sources=sources, nfft=4096, depth=6, rngs=nnx.Rngs(0))
+
+    x = torch.randn(*shape)
+
+    torch_add_print_hook(torch_model, log_to_file=True)
 
     with torch.no_grad():
         y = torch_model(x)
 
-    # with intercept_methods(print_shapes_hook):
-    y_flax = flax_model(x.detach().numpy())
+    flax_model = copy_torch_params(torch_model, flax_model)
+
+    with intercept_methods(get_print_hook(log_to_file=True)):
+        y_flax = flax_model(x.detach().numpy())
 
     assert y.shape == y_flax.shape, f"y shape: {y.shape} must match y_flax shape: {y_flax.shape}"
 
     diff = jnp.linalg.norm(y.detach().numpy() - y_flax)
     logger.info(f"HDemucs forward diff: {diff}")
     assert jnp.allclose(y.detach().numpy(), y_flax, atol=TOL), f"l2 norm: {diff:.6f}"
+
+    # make sure each separated track matches (batch_size, tracks, channels, length)
+    for i in range(4):
+        diff = jnp.linalg.norm(y[:, i].detach().numpy() - y_flax[:, i])
+        logger.info(f"HDemucs forward diff for track {i}: {diff}")
+        assert jnp.allclose(y[:, i].detach().numpy(), y_flax[:, i], atol=TOL), f"l2 norm: {diff:.6f}"
+
+        
+def test_hdemucs_forward_real_audio(torch_model: TorchHDemucs):
+    sources = ["drums", "bass", "other", "vocals"]
+
+    audio_path = "./testaudio.wav"
+    waveform, sample_rate = torchaudio.load(audio_path, format="wav")
+
+    # normalize
+    ref = waveform.mean(0)
+    waveform_n = (waveform - ref.mean()) / ref.std()
+
+    waveform_n = waveform_n.unsqueeze(0)
+
+    torch_add_print_hook(torch_model, log_to_file=True)
+
+    with torch.no_grad():
+        y = torch_model(waveform_n) # (1, 4, 2, length)
+
+    # flax
+    flax_model = HDemucs(sources=sources, nfft=4096, depth=6, rngs=nnx.Rngs(0))
+    flax_model = copy_torch_params(torch_model, flax_model)
+
+    with intercept_methods(get_print_hook(log_to_file=True)):
+        y_flax = flax_model(waveform_n.numpy()) # (1, 4, 2, length)
+
+    assert y.shape == y_flax.shape, f"y shape: {y.shape} must match y_flax shape: {y_flax.shape}"
+
+    diff = jnp.linalg.norm(y.detach().numpy() - y_flax)
+    logger.info(f"HDemucs forward diff: {diff}")
+    assert jnp.allclose(y.detach().numpy(), y_flax, atol=TOL), f"l2 norm: {diff:.6f}"
+
+    for i in range(4):
+        diff = jnp.linalg.norm(y[:, i].detach().numpy() - y_flax[:, i])
+        logger.info(f"HDemucs forward diff for track {i}: {diff}")
+        assert jnp.allclose(y[:, i].detach().numpy(), y_flax[:, i], atol=TOL), f"l2 norm: {diff:.6f}"
 
 
 """Spectrogram related tests
@@ -957,5 +1032,4 @@ def test_hdemucs_ispec(torch_model: TorchHDemucs, shape: tuple):
     diff = jnp.linalg.norm(z_torch.detach().numpy() - z_flax)
     logger.info(f"hdemucs_ispec diff: {diff}")
     assert jnp.allclose(z_torch.detach().numpy(), z_flax, atol=TOL), f"l2 norm: {diff:.6f}"
-
 

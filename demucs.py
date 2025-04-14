@@ -695,11 +695,8 @@ class HDemucs(Module):
         x = input
         length = x.shape[-1]
 
-        print(f"input.shape: {input.shape}")
         z = self._spec(input)
-        print(f"z.shape: {z.shape}")
         mag = complex_spec_to_real(z)
-        print(f"mag.shape: {mag.shape}")
         x = mag
 
         B, C, F, T = x.shape
@@ -777,11 +774,8 @@ class HDemucs(Module):
         x = x.reshape(B, S, -1, F, T)
         x = x * std[:, None] + mean[:, None]
 
-        print(f"x.shape: {x.shape}")
         zout = real_spec_to_complex(x)
-        print(f"zout.shape: {zout.shape}")
         x = self._ispec(zout, length)
-        print(f"x.shape: {x.shape}")
 
         xt = xt.reshape(B, S, -1, length)
         xt = xt * xt_std[:, None] + xt_mean[:, None]

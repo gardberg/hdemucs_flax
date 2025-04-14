@@ -2,9 +2,12 @@ import torch
 from flax import nnx
 import jax.numpy as jnp
 from jax import Array
-from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, Identity, TorchConv, TorchConv2d, HybridDecoderLayer
+from typing import Callable
+from functools import partial
+from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, Identity, TorchConv, TorchConv2d, HybridDecoderLayer, HDemucs
 
 from torchaudio.models._hdemucs import _ScaledEmbedding, _LayerScale, _LocalState, _BLSTM, _DConv, _HEncLayer, _HDecLayer
+from torchaudio.models._hdemucs import HDemucs as TorchHDemucs
 
 from conv import TransposedConv1d, TransposedConv2d
 from module import Module
@@ -23,7 +26,7 @@ def validate_shapes(target_shape: tuple, reference_shape: tuple):
     if target_shape != reference_shape:
         raise ValueError(f"Attempted to convert torch module with shape {target_shape} to nnx_module with shape {reference_shape}")
 
-def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
+def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> nnx.Module:
     """
     Copies the parameters from a pytorch module and returns the corresponding nnx module.
     """
@@ -33,7 +36,8 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         validate_instance(nnx_module, ScaledEmbedding, torch_module)
         validate_shapes(torch_module.weight.shape, nnx_module.embedding.embedding.shape)
 
-        nnx_module.embedding.embedding = tensor_to_param(torch_module.weight)
+        nnx_module.embedding.embedding = tensor_to_param(torch_module.embedding.weight)
+        nnx_module.scale = jnp.array(torch_module.scale)
         return nnx_module
 
     if isinstance(torch_module, torch.nn.Conv1d):
@@ -134,6 +138,17 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
 
         return nnx_module
 
+    if isinstance(torch_module, torch.nn.ModuleList):
+        validate_instance(nnx_module, list, torch_module)
+
+        layers = []
+        for torch_layer, nnx_layer in zip(torch_module, nnx_module):
+            layers.append(copy_torch_params(torch_layer, nnx_layer))
+
+        nnx_module = layers
+
+        return nnx_module
+
     if isinstance(torch_module, torch.nn.GroupNorm):
         validate_instance(nnx_module, nnx.GroupNorm, torch_module)
 
@@ -202,7 +217,18 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module):
         nnx_module.norm1 = copy_torch_params(torch_module.norm1, nnx_module.norm1)
 
         return nnx_module
+
+    if isinstance(torch_module, TorchHDemucs):
+        validate_instance(nnx_module, HDemucs, torch_module)
+        nnx_module: HDemucs
+
+        nnx_module.freq_emb = copy_torch_params(torch_module.freq_emb, nnx_module.freq_emb)
+        nnx_module.time_encoder = copy_torch_params(torch_module.time_encoder, nnx_module.time_encoder)
+        nnx_module.freq_encoder = copy_torch_params(torch_module.freq_encoder, nnx_module.freq_encoder)
+        nnx_module.freq_decoder = copy_torch_params(torch_module.freq_decoder, nnx_module.freq_decoder)
+        nnx_module.time_decoder = copy_torch_params(torch_module.time_decoder, nnx_module.time_decoder)
         
+        return nnx_module
 
     else:
         raise ValueError(f"Coverting {type(torch_module)} to nnx.Module not implemented")
@@ -254,49 +280,52 @@ def copy_single_direction(torch_lstm: torch.nn.LSTM, flax_cell: nnx.RNN, layer_i
 def tensor_to_param(torch_tensor: torch.Tensor) -> nnx.Param:
     return nnx.Param(value=torch_tensor.detach().numpy())
 
+def get_print_hook(log_to_file: bool = False) -> Callable:
+    if log_to_file:
+        shape_logger = logging.getLogger('shape_logger')
+        shape_logger.setLevel(logging.INFO)
+        if not shape_logger.handlers:
+            file_handler = logging.FileHandler('./shape_logs.log')
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+            shape_logger.addHandler(file_handler)
+        return partial(print_shapes_hook, print_fn=shape_logger.info)
+    else:
+        return print_shapes_hook
 
-def print_shapes_hook(next_fun, args, kwargs, context):
+def print_shapes_hook(next_fun, args, kwargs, context, print_fn: Callable = print):
     """
     Interceptor that prints input and output shapes and norms.
     Similar to PyTorch's forward hook.
     """
     # Get module name and class
-    module_name = context.module.name if hasattr(context.module, 'name') else context.module.__class__.__name__
+    module_name = context.module.__class__.__name__
     method_name = context.method_name
     
-    header = f"\n{'='*80}\n{module_name}.{method_name}\n{'-'*80}"
+    module_str = f"{method_name} ({module_name})"
+    print_fn(f"\n{'-'*10} {module_str} {'-'*10}")
     
     # Print input information
     if args:
-        print(header)
         for i, arg in enumerate(args):
             if hasattr(arg, 'shape'):
-                shape_str = str(tuple(arg.shape)).ljust(20)
-                norm = jnp.linalg.norm(arg).item()
+                norm = float(jnp.linalg.norm(arg).item())
                 norm_str = f"{norm:.6f}".rjust(12)
-                print(f"  arg{i}:    {shape_str}    norm: {norm_str}")
+                print_fn(f"  arg{i}:    {str(tuple(arg.shape)):<20}    norm: {norm_str}")
     
     # Call the original method to get the output
     output = next_fun(*args, **kwargs)
     
     # Print output information
     if hasattr(output, 'shape'):
-        if not args:  # Print header if not already printed
-            print(header)
-        shape_str = str(tuple(output.shape)).ljust(20)
-        norm = jnp.linalg.norm(output).item()
+        norm = float(jnp.linalg.norm(output).item())
         norm_str = f"{norm:.6f}".rjust(12)
-        print(f"  out0:    {shape_str}    norm: {norm_str}")
+        print_fn(f"  out0:    {str(tuple(output.shape)):<20}    norm: {norm_str}")
         
-    elif isinstance(output, tuple) and hasattr(output[0], 'shape'):
-        if not args:  # Print header if not already printed
-            print(header)
+    elif isinstance(output, tuple):
         for i, out in enumerate(output):
             if hasattr(out, 'shape'):
-                shape_str = str(tuple(out.shape)).ljust(20)
-                norm = jnp.linalg.norm(out).item()
+                norm = float(jnp.linalg.norm(out).item())
                 norm_str = f"{norm:.6f}".rjust(12)
-                print(f"  out{i}:    {shape_str}    norm: {norm_str}")
+                print_fn(f"  out{i}:    {str(tuple(out.shape)):<20}    norm: {norm_str}")
     
-    print(f"{'='*80}\n")
     return output
