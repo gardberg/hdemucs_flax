@@ -3,7 +3,7 @@ from jax import Array
 import jax.numpy as jnp
 import jax.nn as nn
 from functools import partial
-from typing import Optional, Dict, Any, Union, List
+from typing import Optional, Dict, Any, Union, List, Tuple
 import math
 import jax.scipy.signal as jsig
 
@@ -681,6 +681,17 @@ class HDemucs(Module):
                 self.freq_emb = ScaledEmbedding(freqs, chin_z, scale=emb_scale, rngs=rngs)
                 self.freq_emb_scale = freq_emb
 
+    def _normalize(self, x: Array, axis: Tuple[int, ...] = (1, 2, 3)) -> Tuple[Array, float, float]:
+        """
+        Normalizes input array over (_, channels, freqs, time_steps)
+
+        x: (batch_size, channels, freqs, time_steps)
+        """
+        mean = x.mean(axis=axis, keepdims=True)
+        std = x.std(axis=axis, keepdims=True, ddof=1) # Unbiased is default in torch
+        x = (x - mean) / (self.epsilon + std)
+        return x, mean, std
+
     def __call__(self, input: Array) -> Array:
         """
         Args:
@@ -702,15 +713,11 @@ class HDemucs(Module):
         B, C, F, T = x.shape
 
         # normalize input to freq branch
-        mean = x.mean(axis=(1, 2, 3), keepdims=True)
-        std = x.std(axis=(1, 2, 3), keepdims=True)
-        x = (x - mean) / (self.epsilon + std)
+        x, mean, std = self._normalize(x, axis=(1, 2, 3))
 
         # normalize input to time branch
         xt = input
-        xt_mean = xt.mean(axis=(1, 2), keepdims=True)
-        xt_std = xt.std(axis=(1, 2), keepdims=True)
-        xt = (xt - xt_mean) / (self.epsilon + xt_std)
+        xt, xt_mean, xt_std = self._normalize(xt, axis=(1, 2))
 
         saved = []  # skip connections, freq.
         saved_t = []  # skip connections, time.

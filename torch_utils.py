@@ -1,6 +1,11 @@
 import torch
 import jax.numpy as jnp
 import logging
+from collections import defaultdict
+
+logger = logging.getLogger(__name__)
+logging.getLogger('jax').setLevel(logging.WARNING)
+logging.getLogger('torch').setLevel(logging.WARNING)
 
 # torch shape hook
 def torch_add_print_hook(module: torch.nn.Module, log_to_file: bool = False):
@@ -53,3 +58,51 @@ def torch_add_print_hook(module: torch.nn.Module, log_to_file: bool = False):
 
     # Register hook for root module
     module.register_forward_hook(make_hook_fn(module.__class__.__name__))
+
+    
+def torch_add_record_intermediates_hook(root_module: torch.nn.Module, depth: int = 0):
+    if not hasattr(root_module, '_recorded_intermediates'):
+        root_module._recorded_intermediates = defaultdict(list)
+        root_module._call_sequence = 0
+
+    def make_hook_fn(name):
+        def hook_fn(module, input, output):
+            logger.debug(f"Running hook for {name}")
+            input = input[0] if isinstance(input, tuple) or isinstance(input, list) and len(input) == 1 else input
+            output = output[0] if isinstance(output, tuple) or isinstance(output, list) and len(output) == 1 else output
+            
+            root_module._call_sequence += 1
+            root_module._recorded_intermediates[name].append({
+                'sequence': root_module._call_sequence,
+                'inputs': input,
+                'outputs': output
+            })
+            logger.debug(f"Current recorded intermediates: {root_module._recorded_intermediates.keys()}")
+        return hook_fn
+
+    def add_hooks_recursive(current_module: torch.nn.Module, current_depth: int, prefix: str = ''):
+        logger.debug(f"\nTrying to add hooks for {current_module.__class__.__name__}, depth {current_depth}")
+        if current_depth > depth:
+            logger.debug(f"Skipping {current_module.__class__.__name__} at depth {current_depth}")
+            return
+            
+        name = prefix + current_module.__class__.__name__
+        
+        if isinstance(current_module, torch.nn.ModuleList):
+            logger.debug(f"Found ModuleList {name}, registering hooks for its children")
+            for i, child in enumerate(current_module):
+                child_name = f"{name}[{i}]"
+                logger.debug(f"Adding hook for module list child {child_name}")
+                add_hooks_recursive(child, current_depth, child_name) # consider as same depth
+        else:
+            logger.debug(f"Adding hook for {name}")
+            current_module.register_forward_hook(make_hook_fn(name))
+        
+        if current_depth < depth:
+            if not isinstance(current_module, torch.nn.ModuleList):
+                logger.debug(f"Adding hooks for children of {name}")
+                for child_name, child_module in current_module.named_children():
+                    child_prefix = f"{name}." if prefix else f"{child_name}."
+                    add_hooks_recursive(child_module, current_depth + 1, child_prefix)
+
+    add_hooks_recursive(root_module, 0)

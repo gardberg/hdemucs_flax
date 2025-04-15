@@ -1,7 +1,7 @@
 from flax import nnx
 import contextlib
 import threading
-from typing import Any, Iterator, Callable, TypeVar, cast
+from typing import Any, Iterator, Callable
 import dataclasses
 import functools
 import types

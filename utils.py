@@ -2,7 +2,8 @@ import torch
 from flax import nnx
 import jax.numpy as jnp
 from jax import Array
-from typing import Callable
+from collections import defaultdict
+from typing import Callable, List
 from functools import partial
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, Identity, TorchConv, TorchConv2d, HybridDecoderLayer, HDemucs
 
@@ -328,4 +329,40 @@ def print_shapes_hook(next_fun, args, kwargs, context, print_fn: Callable = prin
                 norm_str = f"{norm:.6f}".rjust(12)
                 print_fn(f"  out{i}:    {str(tuple(out.shape)):<20}    norm: {norm_str}")
     
+    return output
+
+
+def get_record_intermediates_hook(root_module: Module, modules_to_record: List[str]):
+    return partial(record_intermediates_hook, root_module=root_module, modules_to_record=modules_to_record)
+
+def record_intermediates_hook(
+    next_fun,
+    args,
+    kwargs,
+    context,
+    root_module: Module,
+    modules_to_record: List[str]
+    ):
+    
+    if context.module.__class__.__name__ not in modules_to_record:
+        return next_fun(*args, **kwargs)
+
+    if not hasattr(root_module, '_recorded_intermediates'):
+        root_module._recorded_intermediates = defaultdict(list)
+        root_module._call_sequence = 0
+        root_module._call_counter = defaultdict(int)
+    
+    output = next_fun(*args, **kwargs)
+
+    root_module._call_sequence += 1
+    class_name = context.module.__class__.__name__
+    name = class_name + f"[{root_module._call_counter[class_name]}]"
+    root_module._recorded_intermediates[name].append({
+        'sequence': root_module._call_sequence,
+        'inputs': args,
+        'outputs': output
+    })
+
+    root_module._call_counter[class_name] += 1
+
     return output
