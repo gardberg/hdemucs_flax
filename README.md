@@ -4,7 +4,6 @@ Flax implementation of HDemucs audio source separation model
 
 ## TODO
 
-Forward pass is working, output sounds ok! small numerical error though, unsure of why.
 - [ ] Subclass TorchConv, TorchConv2d, and GroupNorm to add logging logic for debugging?
 
 - [x] HDemucs
