@@ -5,7 +5,7 @@ from jax import Array
 from collections import defaultdict
 from typing import Callable, List
 from functools import partial
-from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, Identity, TorchConv, TorchConv2d, HybridDecoderLayer, HDemucs
+from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, Identity, TorchConv, TorchConv2d, HybridDecoderLayer, HDemucs, GroupNorm
 
 from torchaudio.models._hdemucs import _ScaledEmbedding, _LayerScale, _LocalState, _BLSTM, _DConv, _HEncLayer, _HDecLayer
 from torchaudio.models._hdemucs import HDemucs as TorchHDemucs
@@ -151,7 +151,7 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         return nnx_module
 
     if isinstance(torch_module, torch.nn.GroupNorm):
-        validate_instance(nnx_module, nnx.GroupNorm, torch_module)
+        validate_instance(nnx_module, GroupNorm, torch_module)
 
         validate_shapes(torch_module.weight.shape, nnx_module.scale.shape)
         validate_shapes(torch_module.bias.shape, nnx_module.bias.shape)

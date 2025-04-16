@@ -251,7 +251,12 @@ class TorchConv2d(nnx.Conv):
         """
         return super().__call__(x.transpose(0, 2, 3, 1)).transpose(0, 3, 1, 2)
 
-class TorchGroupNorm(nnx.GroupNorm):
+# Inherit from both custom Module and nnx class to allow for interception logic to run first
+# for __call__ and also inherit attributes and other logic
+class GroupNorm(Module, nnx.GroupNorm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def __call__(self, x: Array) -> Array:
         """
         x: shape (batch_size, channels, *) - PyTorch convention
@@ -260,17 +265,13 @@ class TorchGroupNorm(nnx.GroupNorm):
         
         Works for inputs with any number of dimensions >= 3
         """
-        # Move channels from dim 1 to the last dimension
-        ndim = x.ndim
-        perm = [0] + list(range(2, ndim)) + [1]
-        x_flax = x.transpose(*perm)
+        x_flax = put_channel_dim_last(x)
         
         # Apply GroupNorm
         out_flax = super().__call__(x_flax)
         
-        # Move channels back from last dimension to dim 1
-        perm_back = [0, ndim-1] + list(range(1, ndim-1))
-        return out_flax.transpose(*perm_back)
+        out = put_channel_dim_second(out_flax)
+        return out
 
 class DConv(Module):
     def __init__(
@@ -293,9 +294,6 @@ class DConv(Module):
 
         dilate = depth > 0
         
-        # norm_fn = lambda d: Identity()
-        # if norm_type == "group_norm":
-        #     norm_fn = lambda d: TorchGroupNorm(num_groups=1, num_features=d, epsilon=1e-5, rngs=rngs)
         norm_fn = _get_norm_fn(norm_type, num_groups=1, epsilon=1e-5, rngs=rngs)
 
         hidden = int(channels / compress)
@@ -548,7 +546,7 @@ class HybridDecoderLayer(Module):
 
 def _get_norm_fn(norm_type: str, *args, **kwargs):
     if norm_type == "group_norm":
-        return lambda d: TorchGroupNorm(num_features=d, *args, **kwargs)
+        return lambda d: GroupNorm(num_features=d, *args, **kwargs)
     else: return lambda d: Identity()
 
 
@@ -855,4 +853,18 @@ class HDemucs(Module):
             x = jnp.pad(x, padding_dims, mode="constant", constant_values=0.0)
         return jnp.pad(x, reflect_pad_dims, mode="reflect")
 
-    
+
+# Utility functions used to reshape between torch and flax convention 
+def put_channel_dim_last(x: Array) -> Array:
+    """
+    x: shape (batch_size, channels, *) (torch style)
+    returns: shape (batch_size, *, channels) (flax style)
+    """
+    return x.transpose(0, *range(2, x.ndim), 1)
+
+def put_channel_dim_second(x: Array) -> Array:
+    """
+    x: shape (batch_size, *, channels) (flax style)
+    returns: shape (batch_size, channels, *) (torch style)
+    """
+    return x.transpose(0, -1, *range(1, x.ndim-1))

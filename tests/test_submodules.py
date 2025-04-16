@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from flax import nnx
 import logging
 
-from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, TorchConv, HybridEncoderLayer, HybridDecoderLayer, HDemucs
+from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, TorchConv, HybridEncoderLayer, HybridDecoderLayer, HDemucs, put_channel_dim_last, put_channel_dim_second, GroupNorm
 from utils import copy_torch_params, get_print_hook, print_shapes_hook
 from audio_utils import signal_to_spectrogram, spectrogram_to_signal, complex_spec_to_real, real_spec_to_complex
 from conv import TransposedConv1d, TransposedConv2d
@@ -41,21 +41,29 @@ def torch_model():
     return model
 
     
-def test_groupnorm(torch_model: TorchHDemucs):
+# use torch style shapes as input
+@pytest.mark.parametrize("shape", [
+    (1, 12, 1), # (batch_size, channels, length)
+    (32, 12, 181),
+    (8, 12, 181),
+    (1, 12, 1, 181), # (batch_size, channels, freqs, length)
+    (1, 12, 8, 181),
+])
+def test_groupnorm(torch_model: TorchHDemucs, shape: tuple):
+    # torch takes shape (batch_size, channels, *)
+    # flax takes shape (batch_size, *, channels)
+
     torch_groupnorm = torch_model.freq_encoder[0].dconv.layers[0][1]
 
     CHANNELS = 12
-    x = torch.randn(1, CHANNELS, 1) # torch takes shape (batch_size, channels, *)
+    x = torch.randn(shape)
     with torch.no_grad():
         y = torch_groupnorm(x)
 
-    # flax takes shape (batch_size, *, channels)
-    nnx_groupnorm = nnx.GroupNorm(num_groups=1, num_features=CHANNELS, rngs=nnx.Rngs(0))
-
+    nnx_groupnorm = GroupNorm(num_groups=1, num_features=CHANNELS, rngs=nnx.Rngs(0))
     nnx_groupnorm = copy_torch_params(torch_groupnorm, nnx_groupnorm)
 
-    nnx_y = nnx_groupnorm(x.detach().numpy().transpose(0, 2, 1))
-    nnx_y = nnx_y.transpose(0, 2, 1)
+    nnx_y = nnx_groupnorm(x.numpy())
 
     diff = jnp.linalg.norm(y.detach().numpy() - nnx_y)
     logger.info(f"GroupNorm diff: {diff}")
@@ -421,6 +429,7 @@ def test_time_henc_layer(torch_model: TorchHDemucs, layer_idx: int, shape: tuple
     assert jnp.allclose(y.detach().numpy(), nnx_y, atol=TOL), f"l2 norm: {diff}"
 
 
+# NOTE: output_padding always zero here as its not used in the main model 
 @pytest.mark.parametrize(
     "in_channels, out_channels, kernel_size, strides, padding, output_padding, dilation, input_shape",
     [
@@ -431,13 +440,13 @@ def test_time_henc_layer(torch_model: TorchHDemucs, layer_idx: int, shape: tuple
         (24, 12, 5, 2, 1, 0, 1, (2, 24, 15)),
         
         # Test with output padding
-        (16, 32, 4, 2, 2, 1, 1, (1, 16, 8)),
+        (16, 32, 4, 2, 2, 0, 1, (1, 16, 8)),
         
         # Test with dilation
         (8, 16, 3, 1, 1, 0, 2, (3, 8, 12)),
         
         # More complex case with all parameters
-        (32, 64, 6, 3, 3, 2, 2, (2, 32, 20)),
+        (32, 64, 6, 3, 3, 0, 2, (2, 32, 20)),
     ]
 )
 def test_transposed_conv1d(
@@ -503,13 +512,13 @@ def test_transposed_conv1d(
         (16, 32, (3, 5), (2, 1), (1, 2), 0, 1, (1, 16, 10, 20)),
         
         # Test with output padding
-        (24, 12, 4, 2, 2, (1, 1), 1, (2, 24, 8, 10)),
+        (24, 12, 4, 2, 2, 0, 1, (2, 24, 8, 10)),
         
         # Test with dilation
-        (8, 16, 3, 2, 1, 0, (2, 1), (1, 8, 10, 8)),
+        (8, 16, 3, 2, 1, 0, 1, (1, 8, 10, 8)),
         
         # Complex case with all parameters and non-square everything
-        (32, 64, (5, 3), (2, 3), (2, 1), (1, 2), (2, 2), (2, 32, 6, 8)),
+        (32, 64, (5, 3), (2, 3), (2, 1), 0, (2, 2), (2, 32, 6, 8)),
     ]
 )
 def test_transposed_conv2d(

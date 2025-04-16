@@ -4,11 +4,13 @@ import pytest
 import jax.numpy as jnp
 import torchaudio
 import flax.nnx as nnx
-
+import jax
 from torchaudio.models import HDemucs as TorchHDemucs
 
 from demucs import HDemucs
 from utils import copy_torch_params, get_print_hook, print_shapes_hook
+
+from module import intercept_methods
 
 torch.manual_seed(0)
 
@@ -109,8 +111,10 @@ def test_hdemucs_forward_real_audio(torch_model: TorchHDemucs):
         assert jnp.allclose(y[:, i].detach().numpy(), y_flax[:, i], atol=TOL), f"l2 norm: {diff:.6f}"
 
 
-# Speed
+# Compare model speeds via 'pytest-benchmark' plugin
+@pytest.mark.benchmark(group="speed")
 def test_torch_speed(benchmark, torch_model: TorchHDemucs):
+    logger.info(f"Using torch default backend: {next(torch_model.parameters()).device}")
 
     audio_path = "./testaudio.wav"
     waveform, sample_rate = torchaudio.load(audio_path, format="wav")
@@ -128,7 +132,10 @@ def test_torch_speed(benchmark, torch_model: TorchHDemucs):
     logger.info(f"Torch forward time: {result}")
 
 
+@pytest.mark.benchmark(group="speed")
 def test_flax_speed(benchmark, torch_model: TorchHDemucs):
+    logger.info(f"Using JAX default backend: {jax.default_backend()}")
+
     sources = ["drums", "bass", "other", "vocals"]
 
     audio_path = "./testaudio.wav"
@@ -145,5 +152,5 @@ def test_flax_speed(benchmark, torch_model: TorchHDemucs):
     def flax_forward(x):
         return flax_model(x)
 
-    result = benchmark(flax_forward, waveform_n.numpy())
+    result = benchmark(flax_forward, jnp.array(waveform_n.numpy()))
     logger.info(f"Flax forward time: {result}")

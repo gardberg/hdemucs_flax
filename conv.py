@@ -340,6 +340,7 @@ def gradient_based_conv_transpose(
         f"but got `output_shape` {output_shape}"
       )
 
+  # TODO: The pads outputted here do not seem compatible with lax.conv_general_dilated, how to fix?
   pads = tuple(map(_compute_adjusted_padding, i_sdims, output_shape, k_sdims, strides, padding, dilation))
 
 
