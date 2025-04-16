@@ -37,6 +37,13 @@ Flax implementation of HDemucs audio source separation model
 
 ## Notes
 
+#### Speed considerations
+
+- Approximate GELU / GLU?
+- Fast variance via flax groupnorm (fused kernel)?
+
+#### Misc
+
 https://flax-linen.readthedocs.io/en/latest/guides/converting_and_upgrading/convert_pytorch_to_flax.html
 
 - freq_encoder: 6x _HEncLayer

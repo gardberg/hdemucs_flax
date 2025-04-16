@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, Union, List, Tuple
 import math
 import jax.scipy.signal as jsig
 
-from conv import TransposedConv1d, TransposedConv2d
+from conv import TransposedConv1d, TransposedConv2d, FlaxTransposedConv1d, FlaxTransposedConv2d
 from audio_utils import signal_to_spectrogram, spectrogram_to_signal, complex_spec_to_real, real_spec_to_complex
 from module import Module
 
@@ -252,10 +252,17 @@ class TorchConv2d(nnx.Conv):
         return super().__call__(x.transpose(0, 2, 3, 1)).transpose(0, 3, 1, 2)
 
 # Inherit from both custom Module and nnx class to allow for interception logic to run first
-# for __call__ and also inherit attributes and other logic
+# for __call__ as well as inherit attributes and other logic from nnx class
+# NOTE: Torch uses biased variance estimator
+# NOTE: Currently small numerical diff, not sure why, maybe because of flax using unbiased
 class GroupNorm(Module, nnx.GroupNorm):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(
+            *args,
+            **kwargs,
+            use_fast_variance=False, # To match PyTorch more closely
+            epsilon=1e-5,
+        )
 
     def __call__(self, x: Array) -> Array:
         """
@@ -294,7 +301,7 @@ class DConv(Module):
 
         dilate = depth > 0
         
-        norm_fn = _get_norm_fn(norm_type, num_groups=1, epsilon=1e-5, rngs=rngs)
+        norm_fn = _get_norm_fn(norm_type, num_groups=1, rngs=rngs)
 
         hidden = int(channels / compress)
 
@@ -354,7 +361,7 @@ class HybridEncoderLayer(Module):
 
         if dconv_kw is None: dconv_kw = {}
 
-        norm_fn = _get_norm_fn(norm_type, num_groups=norm_groups, epsilon=1e-5, rngs=rngs)
+        norm_fn = _get_norm_fn(norm_type, num_groups=norm_groups, rngs=rngs)
 
         pad_val = kernel_size // 4 if pad else 0
 
@@ -450,7 +457,7 @@ class HybridDecoderLayer(Module):
     ):
         if dconv_kw is None: dconv_kw = {}
 
-        norm_fn = _get_norm_fn(norm_type, num_groups=norm_groups, epsilon=1e-5, rngs=rngs)
+        norm_fn = _get_norm_fn(norm_type, num_groups=norm_groups, rngs=rngs)
 
         if pad:
             if (kernel_size - stride) % 2 != 0:
@@ -468,7 +475,8 @@ class HybridDecoderLayer(Module):
         self.empty = empty
 
         self.conv_class = TorchConv2d if freq else TorchConv
-        self.conv_class_tr = TransposedConv2d if freq else TransposedConv1d
+        # self.conv_class_tr = TransposedConv2d if freq else TransposedConv1d
+        self.conv_class_tr = FlaxTransposedConv2d if freq else FlaxTransposedConv1d
 
         if freq: # 2d
             kernel_size = (kernel_size, 1)
@@ -528,7 +536,11 @@ class HybridDecoderLayer(Module):
             if skip is not None:
                 raise ValueError("Skip must be none when empty is true.")
 
-        z = self.conv_tr(y)
+
+        # NOTE: Transposed conv uses channel last convention
+        z = self.conv_tr(put_channel_dim_last(y))
+        z = put_channel_dim_second(z)
+
         z = self.norm2(z)
         if self.freq:
             if self.pad:
