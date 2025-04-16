@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, Union, List, Tuple
 import math
 import jax.scipy.signal as jsig
 
-from conv import TransposedConv1d, TransposedConv2d, FlaxTransposedConv1d, FlaxTransposedConv2d
+from conv import FlaxTransposedConv1d, FlaxTransposedConv2d
 from audio_utils import signal_to_spectrogram, spectrogram_to_signal, complex_spec_to_real, real_spec_to_complex
 from module import Module
 

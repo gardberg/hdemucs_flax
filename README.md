@@ -4,11 +4,11 @@ Flax implementation of HDemucs audio source separation model
 
 ## TODO
 
-- [ ] Switch to regular nnx.GroupNorm instead of TorchGroupNorm
+- [x] Switch to regular nnx.GroupNorm instead of TorchGroupNorm
   - [ ] Figure out why we're getting numerical diff for it
 - [ ] Samma sak för TorchConv, TorchConv2d, flytta ut transposes
   - [ ] Mer jobb dock att för hela modellen gå över till flax-shape format
-- [ ] Skriva om transposed convs att vara jit compilable. 
+- [x] Skriva om transposed convs att vara jit compilable. 
   Luta sig starkt på begränsade inputs utifrån modellens conf, dvs behöver inte stödja alla typer av padding och stride och så. Använd `jax.lax.conv_transpose` ?
 
 - [x] HDemucs

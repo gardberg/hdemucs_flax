@@ -9,7 +9,7 @@ import logging
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, TorchConv, HybridEncoderLayer, HybridDecoderLayer, HDemucs, put_channel_dim_last, put_channel_dim_second, GroupNorm
 from utils import copy_torch_params, get_print_hook, print_shapes_hook, tensor_to_param
 from audio_utils import signal_to_spectrogram, spectrogram_to_signal, complex_spec_to_real, real_spec_to_complex
-from conv import TransposedConv1d, TransposedConv2d, FlaxTransposedConv1d, FlaxTransposedConv2d
+from conv import FlaxTransposedConv1d, FlaxTransposedConv2d
 from module import intercept_methods
 from torch_utils import torch_add_print_hook
 
@@ -430,72 +430,6 @@ def test_time_henc_layer(torch_model: TorchHDemucs, layer_idx: int, shape: tuple
     assert jnp.allclose(y.detach().numpy(), nnx_y, atol=TOL), f"l2 norm: {diff}"
 
 
-# NOTE: in hdemucs only the first 4 params are used, rest are default
-@pytest.mark.parametrize(
-    "in_channels, out_channels, kernel_size, strides, input_shape",
-    [
-        # Basic case (original test)
-        (48, 12, 8, 4, (1, 48, 10)),
-        
-        # Different channel configurations
-        (24, 12, 5, 2, (2, 24, 15)),
-        
-        # Test with output padding
-        (16, 32, 4, 2, (1, 16, 8)),
-        
-        # Test with dilation
-        (8, 16, 3, 1, (3, 8, 12)),
-        
-        # More complex case with all parameters
-        (32, 64, 6, 3, (2, 32, 20)),
-    ]
-)
-def test_transposed_conv1d(
-    in_channels, out_channels, kernel_size, strides, 
-    input_shape
-):
-    # Create PyTorch transposed conv
-    torch_conv = torch.nn.ConvTranspose1d(
-        in_channels=in_channels, 
-        out_channels=out_channels, 
-        kernel_size=kernel_size,
-        stride=strides,
-    )
-
-    # Create input tensor with the specified shape
-    x = torch.randn(*input_shape)
-
-    # Get PyTorch output
-    with torch.no_grad():
-        y = torch_conv(x)
-        
-    # Create and initialize equivalent Flax module
-    nnx_conv = TransposedConv1d(
-        in_channels=in_channels, 
-        out_channels=out_channels, 
-        kernel_size=kernel_size,
-        strides=strides,
-        rngs=nnx.Rngs(0)
-    )
-
-    # Copy parameters from PyTorch to Flax
-    nnx_conv = copy_torch_params(torch_conv, nnx_conv)
-
-    # Get Flax output
-    nnx_y = nnx_conv(x.detach().numpy())
-
-    # Check that shapes match
-    logger.info(f"PyTorch shape: {y.shape}, Flax shape: {nnx_y.shape}")
-    assert y.shape == nnx_y.shape, f"PyTorch shape: {y.shape}, Flax shape: {nnx_y.shape}"
-
-    # Compute and log difference
-    diff = jnp.linalg.norm(y.detach().numpy() - nnx_y)
-    logger.info(f"TransposedConv1D diff (in={in_channels}, out={out_channels}, k={kernel_size}, s={strides}): {diff}")
-    
-    # Assert outputs are close
-    assert jnp.allclose(y.detach().numpy(), nnx_y, atol=TOL), f"l2 norm: {diff}"
-
-
 @pytest.mark.parametrize(
     "in_channels, out_channels, kernel_size, strides, input_shape",
     [
@@ -586,61 +520,6 @@ def test_flax_transposed_conv2d(in_channels, out_channels, kernel_size, strides,
     diff = jnp.linalg.norm(y.detach().numpy() - nnx_y)
     logger.info(f"FlaxTransposedConv2D diff: {diff}")
     assert jnp.allclose(y.detach().numpy(), nnx_y, atol=TOL), f"l2 norm: {diff}"
-
-@pytest.mark.parametrize(
-    "in_channels, out_channels, kernel_size, strides, input_shape",
-    [
-        (16, 8, 3, 1, (2, 16, 12, 12)),
-        (16, 32, (3, 5), (2, 1), (1, 16, 10, 20)),
-        (24, 12, 4, 2, (2, 24, 8, 10)),
-        (8, 16, 3, 2, (1, 8, 10, 8)),
-        (32, 64, (5, 3), (2, 3), (2, 32, 6, 8)),
-    ]
-)
-def test_transposed_conv2d(
-    in_channels, out_channels, kernel_size, strides, 
-    input_shape
-):
-    # Create PyTorch transposed conv
-    torch_conv = torch.nn.ConvTranspose2d(
-        in_channels=in_channels, 
-        out_channels=out_channels, 
-        kernel_size=kernel_size,
-        stride=strides,
-    )
-
-    # Create input tensor with the specified shape
-    x = torch.randn(*input_shape)
-    
-    # Get PyTorch output
-    with torch.no_grad():
-        y = torch_conv(x)
-        
-    # Create and initialize equivalent Flax module
-    nnx_conv = TransposedConv2d(
-        in_channels=in_channels, 
-        out_channels=out_channels, 
-        kernel_size=kernel_size,
-        strides=strides,
-        rngs=nnx.Rngs(0)
-    )
-
-    # Copy parameters from PyTorch to Flax
-    nnx_conv = copy_torch_params(torch_conv, nnx_conv)
-
-    # Get Flax output
-    nnx_y = nnx_conv(x.detach().numpy())
-
-    # Check that shapes match
-    assert y.shape == nnx_y.shape, f"PyTorch shape: {y.shape}, Flax shape: {nnx_y.shape}"
-
-    # Compute and log difference
-    diff = jnp.linalg.norm(y.detach().numpy() - nnx_y)
-    logger.info(f"TransposedConv2D diff (in={in_channels}, out={out_channels}, k={kernel_size}): {diff}")
-    
-    # Assert outputs are close
-    assert jnp.allclose(y.detach().numpy(), nnx_y, atol=TOL), f"l2 norm: {diff}"
-    
 
 
 # NOTE: Small numerical error here, unsure why, padding, glu? switched to ones for more deterministic
