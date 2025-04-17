@@ -15,7 +15,7 @@ The inputs to the TransposedConv1d init are (in_channels, out_channels, kernel_s
 for Conv2d its the same only that kernel_size and stride are tuples
 """
 
-class FlaxTransposedConv1d(Module):
+class TransposedConv1d(Module):
   def __init__(
     self,
     in_channels: int,
@@ -67,7 +67,7 @@ class FlaxTransposedConv1d(Module):
     return result
 
 
-class FlaxTransposedConv2d(Module):
+class TransposedConv2d(Module):
   def __init__(
     self,
     in_channels: int,

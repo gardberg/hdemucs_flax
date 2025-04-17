@@ -59,8 +59,8 @@ def test_hdemucs_forward(torch_model: TorchHDemucs, shape: tuple):
 
     flax_model = copy_torch_params(torch_model, flax_model)
 
-    # with intercept_methods(get_print_hook(log_to_file=True)):
-    y_flax = flax_model(x.detach().numpy())
+    with intercept_methods(get_print_hook(log_to_file=True)):
+        y_flax = flax_model(x.detach().numpy())
 
     assert y.shape == y_flax.shape, f"y shape: {y.shape} must match y_flax shape: {y_flax.shape}"
 

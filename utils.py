@@ -10,7 +10,7 @@ from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, B
 from torchaudio.models._hdemucs import _ScaledEmbedding, _LayerScale, _LocalState, _BLSTM, _DConv, _HEncLayer, _HDecLayer
 from torchaudio.models._hdemucs import HDemucs as TorchHDemucs
 
-from conv import FlaxTransposedConv1d, FlaxTransposedConv2d
+from conv import TransposedConv1d, TransposedConv2d
 from module import Module
 
 import logging
@@ -189,7 +189,7 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         return nnx_module
 
     if isinstance(torch_module, torch.nn.ConvTranspose1d):
-        validate_instance(nnx_module, FlaxTransposedConv1d, torch_module)
+        validate_instance(nnx_module, TransposedConv1d, torch_module)
         weight = torch_module.weight.permute(1, 0, 2) # flax expects (out, in, kernel)
         nnx_module.weight = jnp.flip(tensor_to_param(weight), axis=-1) # flip to match PyTorch
 
@@ -202,7 +202,7 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         return nnx_module
 
     if isinstance(torch_module, torch.nn.ConvTranspose2d):
-        validate_instance(nnx_module, FlaxTransposedConv2d, torch_module)
+        validate_instance(nnx_module, TransposedConv2d, torch_module)
         weight = torch_module.weight.permute(1, 0, 2, 3) # flax expects (out, in, kernel_height, kernel_width)
         nnx_module.weight = jnp.flip(tensor_to_param(weight), axis=(-2, -1)) # flip to match PyTorch
 

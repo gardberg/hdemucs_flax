@@ -9,7 +9,7 @@ import logging
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, TorchConv, HybridEncoderLayer, HybridDecoderLayer, HDemucs, put_channel_dim_last, put_channel_dim_second, GroupNorm
 from utils import copy_torch_params, get_print_hook, print_shapes_hook, tensor_to_param
 from audio_utils import signal_to_spectrogram, spectrogram_to_signal, complex_spec_to_real, real_spec_to_complex
-from conv import FlaxTransposedConv1d, FlaxTransposedConv2d
+from conv import TransposedConv1d, TransposedConv2d
 from module import intercept_methods
 from torch_utils import torch_add_print_hook
 
@@ -454,7 +454,7 @@ def test_flax_transposed_conv1d(in_channels, out_channels, kernel_size, strides,
         y = torch_conv(x)
 
     # NOTE: flax uses (batch_size, length, channels)
-    nnx_conv = FlaxTransposedConv1d(
+    nnx_conv = TransposedConv1d(
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -501,7 +501,7 @@ def test_flax_transposed_conv2d(in_channels, out_channels, kernel_size, strides,
     with torch.no_grad():
         y = torch_conv(x)
 
-    nnx_conv = FlaxTransposedConv2d(
+    nnx_conv = TransposedConv2d(
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,

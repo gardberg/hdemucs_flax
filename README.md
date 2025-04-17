@@ -6,17 +6,18 @@ Flax implementation of HDemucs audio source separation model
 
 - [x] Switch to regular nnx.GroupNorm instead of TorchGroupNorm
   - [ ] Figure out why we're getting numerical diff for it
-- [ ] Samma sak för TorchConv, TorchConv2d, flytta ut transposes
-  - [ ] Mer jobb dock att för hela modellen gå över till flax-shape format
-- [x] Skriva om transposed convs att vara jit compilable. 
-  Luta sig starkt på begränsade inputs utifrån modellens conf, dvs behöver inte stödja alla typer av padding och stride och så. Använd `jax.lax.conv_transpose` ?
+  - [ ] Move reshape out of class
+- [x] Rewrite TorchConv, TorchConv2d with Module
+  - [ ] Move reshape out of class
+- [x] Rewrite transposed convs to be jit compilable
+- [ ] Write logic for comparing numerical diffs (torch_hook.ipynb)
 
 - [x] HDemucs
   - [ ] Utility tests
   - [x] e2e-tests
   - [x] Numerical diff test
-  - [ ] JIT-compilation tests
-  - [ ] Speed comparison
+  - [x] JIT-compilation tests
+  - [x] Speed comparison
 - [x] ScaledEmbedding
 - [x] _HencLayer
   - [x] Time-tests
@@ -33,7 +34,6 @@ Flax implementation of HDemucs audio source separation model
 - [ ] Pyright type checking
 - [ ] Shape annotations
 - [x] Custom interceptor logic
-  - How do we handle modules that do not subclass the custom module?
 
 ## Notes
 

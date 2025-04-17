@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, Union, List, Tuple
 import math
 import jax.scipy.signal as jsig
 
-from conv import FlaxTransposedConv1d, FlaxTransposedConv2d
+from conv import TransposedConv1d, TransposedConv2d
 from audio_utils import signal_to_spectrogram, spectrogram_to_signal, complex_spec_to_real, real_spec_to_complex
 from module import Module
 
@@ -214,7 +214,7 @@ class BLSTM(Module):
         x = jnp.concatenate(out_parts, axis=-1)
         return x[..., :T]
 
-class TorchConv(nnx.Conv):
+class TorchConv(Module, nnx.Conv):
     def __call__(self, x: Array) -> Array:
         """
         x: shape (batch_size, channels, time_steps)
@@ -223,7 +223,7 @@ class TorchConv(nnx.Conv):
         """
         return super().__call__(x.transpose(0, 2, 1)).transpose(0, 2, 1)
 
-class TorchConv2d(nnx.Conv):
+class TorchConv2d(Module, nnx.Conv):
     def __init__(
         self,
         in_features: int,
@@ -317,7 +317,7 @@ class DConv(Module):
                 TorchConv(channels, hidden, kernel_size, kernel_dilation=dilation, padding=padding, rngs=rngs),
                 norm_fn(hidden),
                 gelu,
-                TorchConv(hidden, 2 * channels, 1, rngs=rngs), # TODO: small numerical error after this layer, cause?
+                TorchConv(hidden, 2 * channels, kernel_size=1, rngs=rngs), # TODO: small numerical error after this layer, cause?
                 norm_fn(2 * channels),
                 glu,
                 LayerScale(channels, init=1e-4),
@@ -475,8 +475,7 @@ class HybridDecoderLayer(Module):
         self.empty = empty
 
         self.conv_class = TorchConv2d if freq else TorchConv
-        # self.conv_class_tr = TransposedConv2d if freq else TransposedConv1d
-        self.conv_class_tr = FlaxTransposedConv2d if freq else FlaxTransposedConv1d
+        self.conv_class_tr = TransposedConv2d if freq else TransposedConv1d
 
         if freq: # 2d
             kernel_size = (kernel_size, 1)
