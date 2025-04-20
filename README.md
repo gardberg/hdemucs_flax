@@ -44,6 +44,8 @@ Flax implementation of HDemucs audio source separation model
 
 #### Misc
 
+Model used is HDEMUCS_HIGH_MUSDB_PLUS from torchaudio
+
 https://flax-linen.readthedocs.io/en/latest/guides/converting_and_upgrading/convert_pytorch_to_flax.html
 
 - freq_encoder: 6x _HEncLayer

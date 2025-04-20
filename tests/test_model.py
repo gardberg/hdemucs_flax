@@ -3,12 +3,15 @@ import logging
 import pytest
 import jax.numpy as jnp
 import torchaudio
-import flax.nnx as nnx
+from flax import nnx
 import jax
 from torchaudio.models import HDemucs as TorchHDemucs
 
 from demucs import HDemucs
-from utils import copy_torch_params, get_print_hook, print_shapes_hook
+from utils import get_print_hook, print_shapes_hook, save_checkpoint, load_checkpoint
+from torch_utils import copy_torch_params
+from flax.nnx import Param # Explicitly import Param for filtering type check
+from flax.nnx import filterlib # Import filterlib
 
 from module import intercept_methods
 
@@ -154,3 +157,30 @@ def test_flax_speed(benchmark, torch_model: TorchHDemucs):
 
     result = benchmark(flax_forward, jnp.array(waveform_n.numpy()))
     logger.info(f"Flax forward time: {result}")
+
+
+def test_save_checkpoint(tmp_path):
+    import orbax.checkpoint as ocp
+
+    model = HDemucs(rngs=nnx.Rngs(0))
+    path = save_checkpoint(model, tmp_path)
+    logger.info(f"Checkpoint saved to {path}")
+
+    assert path.exists()
+    assert path.is_dir()
+
+
+def test_load_checkpoint(tmp_path):
+    x = torch.randn(1, 2, 22050)
+    model = HDemucs(rngs=nnx.Rngs(0))
+    y = model(x.numpy())
+
+    path = save_checkpoint(model, tmp_path)
+
+    logger.info(f"Checkpoint saved to {path}")
+
+    loaded_model = load_checkpoint(path)
+    y_loaded = loaded_model(x.numpy())
+
+    assert y.shape == y_loaded.shape, f"y shape: {y.shape} must match y_loaded shape: {y_loaded.shape}"
+    assert jnp.allclose(y, y_loaded, atol=TOL)

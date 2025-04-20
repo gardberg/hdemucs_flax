@@ -564,7 +564,7 @@ def _get_norm_fn(norm_type: str, *args, **kwargs):
 class HDemucs(Module):
     def __init__(
         self,
-        sources: List[str],
+        sources: List[str] = ["drums", "bass", "other", "vocals"],
         audio_channels: int = 2,
         channels: int = 48,
         growth: int = 2,

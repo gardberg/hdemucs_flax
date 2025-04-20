@@ -7,7 +7,8 @@ from flax import nnx
 import logging
 
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, TorchConv, HybridEncoderLayer, HybridDecoderLayer, HDemucs, put_channel_dim_last, put_channel_dim_second, GroupNorm
-from utils import copy_torch_params, get_print_hook, print_shapes_hook, tensor_to_param
+from torch_utils import copy_torch_params, tensor_to_param
+from utils import get_print_hook, print_shapes_hook
 from audio_utils import signal_to_spectrogram, spectrogram_to_signal, complex_spec_to_real, real_spec_to_complex
 from conv import TransposedConv1d, TransposedConv2d
 from module import intercept_methods

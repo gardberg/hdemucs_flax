@@ -1,7 +1,6 @@
 from jax import Array
 import jax.scipy.signal as jsig
 import jax.numpy as jnp
-from scipy.signal import get_window
 
 # corresponds to pytorch model's '_spectro'
 def signal_to_spectrogram(x: Array, n_fft: int = 512, hop_length: int = 128, pad: int = 0) -> Array:
