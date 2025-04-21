@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 from collections import defaultdict
-from typing import Callable, List
+from typing import Callable, List, Union
 from functools import partial
 import orbax.checkpoint as ocp
 from pathlib import Path
@@ -107,11 +107,14 @@ def record_intermediates_hook(
 
 ### Saving & loading ###
 
-def save_checkpoint(model: Module, checkpoint_dir: Path) -> Path:
+def save_checkpoint(model: Module, checkpoint_dir: Union[str, Path]) -> Path:
     """
     Saves a model to 'path' using Orbax CheckpointManager
     Returns the path to the checkpoint file
     """
+    if isinstance(checkpoint_dir, str):
+        checkpoint_dir = Path(checkpoint_dir)
+
     if not checkpoint_dir.exists():
         checkpoint_dir.mkdir(parents=True)
 

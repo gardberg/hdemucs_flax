@@ -35,7 +35,7 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         validate_shapes(torch_module.weight.shape, nnx_module.embedding.embedding.shape)
 
         nnx_module.embedding.embedding = tensor_to_param(torch_module.embedding.weight)
-        nnx_module.scale = jnp.array(torch_module.scale)
+        nnx_module.scale = int(torch_module.scale)
         return nnx_module
 
     if isinstance(torch_module, torch.nn.Conv1d):
@@ -188,7 +188,7 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
     if isinstance(torch_module, torch.nn.ConvTranspose1d):
         validate_instance(nnx_module, TransposedConv1d, torch_module)
         weight = torch_module.weight.permute(1, 0, 2) # flax expects (out, in, kernel)
-        nnx_module.weight = jnp.flip(tensor_to_param(weight), axis=-1) # flip to match PyTorch
+        nnx_module.weight = tensor_to_param(torch.flip(weight, dims=(-1,)))
 
         validate_shapes(weight.shape, nnx_module.weight.shape)
 
@@ -201,7 +201,7 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
     if isinstance(torch_module, torch.nn.ConvTranspose2d):
         validate_instance(nnx_module, TransposedConv2d, torch_module)
         weight = torch_module.weight.permute(1, 0, 2, 3) # flax expects (out, in, kernel_height, kernel_width)
-        nnx_module.weight = jnp.flip(tensor_to_param(weight), axis=(-2, -1)) # flip to match PyTorch
+        nnx_module.weight = tensor_to_param(torch.flip(weight, dims=(-2, -1)))
 
         validate_shapes(weight.shape, nnx_module.weight.shape)
 
@@ -383,3 +383,17 @@ def torch_add_record_intermediates_hook(root_module: torch.nn.Module, depth: int
                     add_hooks_recursive(child_module, current_depth + 1, child_prefix)
 
     add_hooks_recursive(root_module, 0)
+
+    
+def load_torch_hdemucs_pretrained(state_dict_path: str = None):
+    if state_dict_path is None:
+        state_dict_path = "models/hdemucs_high_trained.pt"
+
+    sources = ["drums", "bass", "other", "vocals"]
+    model = TorchHDemucs(sources=sources, nfft=4096, depth=6)
+
+    state_dict = torch.load(state_dict_path, weights_only=True)
+    model.load_state_dict(state_dict)
+    model.eval()
+
+    return model
