@@ -2,6 +2,12 @@
 
 Flax implementation of HDemucs audio source separation model
 
+## Tests
+
+`pytest -k 'not speed' --durations=0 -v`
+
+`pytest --benchmark-skip` / `pytest --benchmark-only`
+
 ## TODO
 
 - [x] Switch to regular nnx.GroupNorm instead of TorchGroupNorm
@@ -36,6 +42,10 @@ Flax implementation of HDemucs audio source separation model
 - [x] Custom interceptor logic
 
 ## Notes
+
+Currently need to decide how to handle BLSTM framing logic for compiling with lengths
+over ~4 seconds of input. Can probably set fixed padding, but how do we handle 
+discarding extra length outside of blstm? it is also dependent on input shape
 
 #### Speed considerations
 

@@ -5,7 +5,6 @@ import jax.nn as nn
 from functools import partial
 from typing import Optional, Dict, Any, Union, List, Tuple
 import math
-import jax.scipy.signal as jsig
 
 from conv import TransposedConv1d, TransposedConv2d
 from audio_utils import signal_to_spectrogram, spectrogram_to_signal, complex_spec_to_real, real_spec_to_complex
@@ -158,12 +157,26 @@ class BidirectionalLSTM(Module):
             x = layer(x)
         return x
 
+# NOTE: Not jit compilable when x exceeds max_steps
 class BLSTM(Module):
-    def __init__(self, dim: int, layers: int = 1, skip: bool = False, *, rngs: nnx.Rngs):
+    def __init__(
+        self,
+        dim: int,
+        layers: int = 1,
+        skip: bool = False,
+        static_lengths: Optional[Dict[int, int]] = None,
+        *,
+        rngs: nnx.Rngs,
+    ):
         self.max_steps = 200
         self.lstm = BidirectionalLSTM(num_layers=layers, hidden_size=dim, input_size=dim, rngs=rngs)
         self.linear = nnx.Linear(2 * dim, dim, rngs=rngs)
         self.skip = skip
+        self.static_lengths = static_lengths
+
+        self.static_length = None
+        if self.static_lengths is not None and dim in self.static_lengths:
+            self.static_length = self.static_lengths[dim]
 
     def __call__(self, x: Array) -> Array:
         """
@@ -172,6 +185,13 @@ class BLSTM(Module):
         """
 
         B, C, T = x.shape
+
+        # T = x.shape[-1] if self.static_length is None else self.static_length
+        if self.static_length is not None:
+            T = self.static_length
+        else:
+            T = x.shape[-1]
+
         y = x  # For skip connection
 
         if self.max_steps is not None and T > self.max_steps:
@@ -185,18 +205,20 @@ class BLSTM(Module):
         
         if framed:
             x = self._reconstruct_frames(x, B, C, T, nframes, width, stride)
-
         if self.skip:
             x += y
 
         return x
 
+    # Adjusted to 
     def _frame_input(self, x: Array, T: int):
         width = self.max_steps
         stride = width // 2
-        nframes = int(jnp.ceil(T / stride))
+        nframes = math.ceil(T / stride)
         tgt_length = (nframes - 1) * stride + width
-        x = jnp.pad(x, ((0, 0), (0, 0), (0, tgt_length - T)))
+        padding_amount = tgt_length - T
+        padding_amount = max(0, padding_amount)
+        x = jnp.pad(x, ((0, 0), (0, 0), (0, padding_amount)))
 
         frames = [x[:, :, i:i+width] for i in range(0, tgt_length - width + 1, stride)]
         x = jnp.stack(frames, axis=1).reshape(-1, x.shape[1], width)
@@ -292,6 +314,7 @@ class DConv(Module):
         ndecay: int = 4,
         lstm: bool = False,
         kernel_size: int = 3,
+        static_blstm_lengths: Optional[Dict[int, int]] = None,
         *,
         rngs: nnx.Rngs,
     ):
@@ -300,6 +323,8 @@ class DConv(Module):
         self.depth = abs(depth)
 
         dilate = depth > 0
+
+        self.static_blstm_lengths = static_blstm_lengths
         
         norm_fn = _get_norm_fn(norm_type, num_groups=1, rngs=rngs)
 
@@ -323,7 +348,7 @@ class DConv(Module):
                 LayerScale(channels, init=1e-4),
             ]
             if attn: mods.insert(3, LocalState(hidden, heads=heads, ndecay=ndecay, rngs=rngs))
-            if lstm: mods.insert(3, BLSTM(hidden, layers=2, skip=True, rngs=rngs))
+            if lstm: mods.insert(3, BLSTM(hidden, layers=2, skip=True, static_lengths=static_blstm_lengths, rngs=rngs))
             
             self.layers.append(mods)
         
@@ -354,6 +379,7 @@ class HybridEncoderLayer(Module):
         context: int = 0,
         dconv_kw: Optional[Dict[str, Any]] = None,
         pad: bool = True,
+        static_blstm_lengths: Optional[Dict[int, int]] = None,
         *,
         rngs: nnx.Rngs,
     ):
@@ -372,6 +398,8 @@ class HybridEncoderLayer(Module):
         self.pad = pad_val
         self.conv_class = TorchConv2d if freq else TorchConv
 
+        self.static_blstm_lengths = static_blstm_lengths
+
         if freq: # 2d
             kernel_size = [kernel_size, 1]
             stride = [stride, 1]
@@ -388,7 +416,7 @@ class HybridEncoderLayer(Module):
             rewrite_kernel_size = 1 + 2 * context
             self.rewrite = self.conv_class(out_channels, 2 * out_channels, rewrite_kernel_size, padding=context, rngs=rngs)
             self.norm2 = norm_fn(2 * out_channels)
-            self.dconv = DConv(out_channels, **dconv_kw, rngs=rngs)
+            self.dconv = DConv(out_channels, **dconv_kw, static_blstm_lengths=static_blstm_lengths, rngs=rngs)
 
     def __call__(self, x: Array, inject: Optional[Array] = None) -> Array:
         """
@@ -583,9 +611,19 @@ class HDemucs(Module):
         dconv_comp: int = 4,
         dconv_attn: int = 4,
         dconv_lstm: int = 4,
+        static_blstm_lengths: Optional[Dict[int, int]] = None, # TODO: Remove
         *,
         rngs: nnx.Rngs,
     ):
+        """
+        Create a audio source separation HDemucs model.
+        
+        static_blstm_lengths: dict = None
+            A dictionary mapping BLSTM dimensions to input lengths corresponding to a static model input length.
+            This is used to statically set the lengths of the BLSTM to allow jit compilation.
+            If None, use input shape, which is not compatible with jit compilation.
+            NOTE: The corresponding lengths have to be manually obtained by e.g. by recording the lengths of inputs.
+        """
         self.sources = sources
         self.audio_channels = audio_channels
         self.channels = channels
@@ -612,6 +650,8 @@ class HDemucs(Module):
         freqs = self.nfft // 2
 
         self.epsilon = 1e-5 # for normalization
+
+        self.static_blstm_lengths = static_blstm_lengths
 
         for index in range(self.depth):
             lstm = index >= dconv_lstm
@@ -659,7 +699,8 @@ class HDemucs(Module):
                 chout_z = max(chout, chout_z)
                 chout = chout_z
 
-            enc = HybridEncoderLayer(chin_z, chout_z, context=context_enc, **kw, rngs=rngs)
+            # only this layer uses BLSMTs
+            enc = HybridEncoderLayer(chin_z, chout_z, context=context_enc, **kw, static_blstm_lengths=self.static_blstm_lengths, rngs=rngs)
             if freq:
                 if last_freq is True and nfft == 2048:
                     kwt["stride"] = 2
@@ -752,7 +793,6 @@ class HDemucs(Module):
                 frs = jnp.arange(x.shape[-2], dtype=jnp.int32)
                 emb = self.freq_emb(frs)
 
-                # NOTE: this returns a view, could this be problem?
                 emb = jnp.broadcast_to(emb.transpose()[None, :, :, None], x.shape)
                 x = x + self.freq_emb_scale * emb
 

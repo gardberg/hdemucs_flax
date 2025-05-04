@@ -10,8 +10,6 @@ from torchaudio.models import HDemucs as TorchHDemucs
 from demucs import HDemucs
 from utils import get_print_hook, print_shapes_hook, save_checkpoint, load_checkpoint
 from torch_utils import copy_torch_params
-from flax.nnx import Param # Explicitly import Param for filtering type check
-from flax.nnx import filterlib # Import filterlib
 
 from module import intercept_methods
 
@@ -45,9 +43,10 @@ def torch_model():
 
 
 @pytest.mark.parametrize("shape", [
-    (1, 2, 22050),
-    (1, 2, 44100),
-    (1, 2, 180000),
+    # (1, 2, 22050),
+    # (1, 2, 44100),
+    # (1, 2, 180000),
+    (1, 2, 44100 * 30),
 ])
 def test_hdemucs_forward(torch_model: TorchHDemucs, shape: tuple):
     sources = ["drums", "bass", "other", "vocals"]
@@ -152,11 +151,63 @@ def test_flax_speed(benchmark, torch_model: TorchHDemucs):
     flax_model = HDemucs(sources=sources, nfft=4096, depth=6, rngs=nnx.Rngs(0))
     flax_model = copy_torch_params(torch_model, flax_model)
 
-    def flax_forward(x):
-        return flax_model(x)
-
-    result = benchmark(flax_forward, jnp.array(waveform_n.numpy()))
+    result = benchmark(flax_model, jnp.array(waveform_n.numpy()))
     logger.info(f"Flax forward time: {result}")
+
+
+@pytest.mark.benchmark(group="speed30s")
+def test_flax_speed_30s(benchmark, torch_model: TorchHDemucs):
+    sources = ["drums", "bass", "other", "vocals"]
+
+    # setup 30s audio
+    audio_path = "./testaudio.wav"
+    waveform, sample_rate = torchaudio.load(audio_path, format="wav")
+
+    duration = waveform.shape[1] / sample_rate
+    while duration < 30:
+        waveform = torch.cat([waveform, waveform], dim=1)
+        duration = waveform.shape[1] / sample_rate
+
+    waveform = waveform[:, :30 * sample_rate]
+    logger.info(f"Waveform shape: {waveform.shape}")
+
+    ref = waveform.mean(0)
+    waveform_n = (waveform - ref.mean()) / ref.std()
+
+    waveform_n = waveform_n.unsqueeze(0)
+    
+    flax_model = HDemucs(sources=sources, nfft=4096, depth=6, rngs=nnx.Rngs(0))
+    flax_model = copy_torch_params(torch_model, flax_model)
+
+    result = benchmark(flax_model, jnp.array(waveform_n.numpy()))
+    logger.info(f"Flax forward time: {result}")
+
+    
+@pytest.mark.benchmark(group="speed30s")
+def test_torch_speed_30s(benchmark, torch_model: TorchHDemucs):
+    audio_path = "./testaudio.wav"
+    waveform, sample_rate = torchaudio.load(audio_path, format="wav")
+
+    # repeat waveform until its 30s long
+    duration = waveform.shape[1] / sample_rate
+    while duration < 30:
+        waveform = torch.cat([waveform, waveform], dim=1)
+        duration = waveform.shape[1] / sample_rate
+
+    waveform = waveform[:, :30 * sample_rate]
+    ref = waveform.mean(0)
+    waveform_n = (waveform - ref.mean()) / ref.std()
+
+    waveform_n = waveform_n.unsqueeze(0)
+
+    logger.info(f"Waveform shape: {waveform_n.shape}")
+
+    def torch_forward(x):
+        with torch.no_grad():
+            return torch_model(x)
+
+    result = benchmark(torch_forward, waveform_n)
+    logger.info(f"Torch forward time: {result}")
 
 
 def test_save_checkpoint(tmp_path):

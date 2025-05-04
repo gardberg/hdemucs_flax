@@ -1,10 +1,14 @@
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, HybridDecoderLayer, HDemucs
-
+import torchaudio
 import flax.nnx as nnx
 from jax import jit
 import jax.numpy as jnp
 
 import pytest
+import torch
+
+import logging
+logger = logging.getLogger(__name__)
 
 @pytest.fixture
 def rngs():
@@ -83,9 +87,25 @@ def test_jit_bidirectional_lstm(rngs):
     assert jnp.allclose(y, y_jit)
 
 
-def test_jit_blstm(rngs):
+@pytest.mark.parametrize("length", [10, 1000])
+def test_jit_blstm(rngs, length):
     blstm = BLSTM(dim=10, layers=1, skip=True, rngs=rngs)
-    x = jnp.ones((1, 10, 10))
+    x = jnp.ones((1, 10, length))
+    y = blstm(x)
+
+    jit_blstm = jit(blstm)
+    y_jit = jit_blstm(x)
+
+    assert jnp.allclose(y, y_jit)
+
+
+@pytest.mark.skip(reason="Static feature to be removed")
+@pytest.mark.parametrize("dim", [192, 384])
+def test_jit_blstm_static(rngs, dim):
+    static_blstm_lengths = {192: 1292, 384: 646}
+
+    blstm = BLSTM(dim=dim, layers=2, skip=True, static_lengths=static_blstm_lengths, rngs=rngs)
+    x = jnp.ones((1, dim, static_blstm_lengths[dim]))
     y = blstm(x)
 
     jit_blstm = jit(blstm)
@@ -151,9 +171,10 @@ def test_jit_hybrid_decoder_layer_time(rngs):
     assert jnp.allclose(y, y_jit)
 
 
-def test_jit_hdemucs(rngs):
+@pytest.mark.parametrize("length", [11025, 44100 * 180])
+def test_jit_hdemucs(rngs, length):
     hdemucs = HDemucs(sources=["drums", "bass", "other", "vocals"], nfft=4096, depth=6, rngs=rngs)
-    x = jnp.ones((1, 2, 22050))
+    x = jnp.ones((1, 2, length))
     y = hdemucs(x)
 
     jit_hdemucs = jit(hdemucs)
@@ -165,9 +186,48 @@ def test_jit_hdemucs(rngs):
 @pytest.mark.benchmark(group="speed")
 def test_flax_jit_speed(benchmark, rngs):
     hdemucs = HDemucs(sources=["drums", "bass", "other", "vocals"], nfft=4096, depth=6, rngs=rngs)
-    x = jnp.ones((1, 2, 22050))
+    audio_path = "./testaudio.wav"
+    waveform, sample_rate = torchaudio.load(audio_path, format="wav")
+
+    ref = waveform.mean(0)
+    waveform_n = (waveform - ref.mean()) / ref.std()
+
+    waveform_n = waveform_n.unsqueeze(0)
+    x = jnp.array(waveform_n.numpy())
 
     hdemucs_jit = jit(hdemucs)
+
+    # warmup / compile
+    hdemucs_jit(x)
+
+    benchmark(hdemucs_jit, x)
+
+    
+@pytest.mark.benchmark(group="speed30s")
+def test_flax_jit_speed_30s(benchmark, rngs):
+    hdemucs = HDemucs(sources=["drums", "bass", "other", "vocals"], nfft=4096, depth=6, rngs=rngs)
+
+    audio_path = "./testaudio.wav"
+    waveform, sample_rate = torchaudio.load(audio_path, format="wav")
+
+    duration = waveform.shape[1] / sample_rate
+    while duration < 30:
+        waveform = torch.cat([waveform, waveform], dim=1)
+        duration = waveform.shape[1] / sample_rate
+
+    waveform = waveform[:, :30 * sample_rate]
+    logger.info(f"Waveform shape: {waveform.shape}")
+
+    ref = waveform.mean(0)
+    waveform_n = (waveform - ref.mean()) / ref.std()
+
+    waveform_n = waveform_n.unsqueeze(0)
+    x = jnp.array(waveform_n.numpy())
+
+    hdemucs_jit = jit(hdemucs)
+
+    # warmup / compile
+    hdemucs_jit(x)
 
     benchmark(hdemucs_jit, x)
 

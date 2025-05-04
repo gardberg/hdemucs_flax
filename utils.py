@@ -8,6 +8,7 @@ from flax import nnx
 from demucs import HDemucs
 
 from module import Module
+from torch_utils import copy_torch_params
 
 import logging
 
@@ -110,6 +111,7 @@ def record_intermediates_hook(
 def save_checkpoint(model: Module, checkpoint_dir: Union[str, Path]) -> Path:
     """
     Saves a model to 'path' using Orbax CheckpointManager
+
     Returns the path to the checkpoint file
     """
     if isinstance(checkpoint_dir, str):
@@ -117,6 +119,8 @@ def save_checkpoint(model: Module, checkpoint_dir: Union[str, Path]) -> Path:
 
     if not checkpoint_dir.exists():
         checkpoint_dir.mkdir(parents=True)
+
+    checkpoint_dir = checkpoint_dir.absolute()
 
     checkpoint_manager = ocp.CheckpointManager(
         checkpoint_dir,
@@ -137,12 +141,17 @@ def save_checkpoint(model: Module, checkpoint_dir: Union[str, Path]) -> Path:
     return checkpoint_dir
 
 
-# TODO: Not working
-def load_checkpoint(checkpoint_dir: Path) -> HDemucs:
+def load_checkpoint(checkpoint_dir: Union[str, Path]) -> HDemucs:
     """
     Loads a model from 'path' using Orbax CheckpointManager
+    
     Returns the loaded model
     """
+    if isinstance(checkpoint_dir, str):
+        checkpoint_dir = Path(checkpoint_dir)
+
+    checkpoint_dir = checkpoint_dir.absolute()
+
     abstract_model = nnx.eval_shape(lambda: HDemucs(rngs=nnx.Rngs(0)))
     graph, abstract_state = nnx.split(abstract_model)
 
@@ -158,3 +167,12 @@ def load_checkpoint(checkpoint_dir: Path) -> HDemucs:
     model = nnx.merge(graph, restored['state'])
 
     return model
+
+
+def create_and_save_checkpoint(save_dir: str):
+    from torchaudio.models._hdemucs import HDemucs as TorchHDemucs
+
+    model = HDemucs(rngs=nnx.Rngs(0))
+    torch_model = TorchHDemucs(sources=model.sources)
+    model = copy_torch_params(torch_model, model)
+    save_checkpoint(model, save_dir)

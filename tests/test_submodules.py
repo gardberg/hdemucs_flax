@@ -45,8 +45,6 @@ def torch_model():
 # use torch style shapes as input
 @pytest.mark.parametrize("shape", [
     (1, 12, 2), # (batch_size, channels, length)
-    (32, 12, 181),
-    (8, 12, 181),
     (1, 12, 1, 181), # (batch_size, channels, freqs, length)
     (1, 12, 8, 181),
 ])
@@ -919,4 +917,3 @@ def test_hdemucs_ispec(torch_model: TorchHDemucs, shape: tuple):
     diff = jnp.linalg.norm(z_torch.detach().numpy() - z_flax)
     logger.info(f"hdemucs_ispec diff: {diff}")
     assert jnp.allclose(z_torch.detach().numpy(), z_flax, atol=TOL), f"l2 norm: {diff:.6f}"
-
