@@ -8,7 +8,6 @@ from flax import nnx
 from demucs import HDemucs
 
 from module import Module
-from torch_utils import copy_torch_params
 
 import logging
 
@@ -167,12 +166,3 @@ def load_checkpoint(checkpoint_dir: Union[str, Path]) -> HDemucs:
     model = nnx.merge(graph, restored['state'])
 
     return model
-
-
-def create_and_save_checkpoint(save_dir: str):
-    from torchaudio.models._hdemucs import HDemucs as TorchHDemucs
-
-    model = HDemucs(rngs=nnx.Rngs(0))
-    torch_model = TorchHDemucs(sources=model.sources)
-    model = copy_torch_params(torch_model, model)
-    save_checkpoint(model, save_dir)

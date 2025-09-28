@@ -2,6 +2,12 @@
 
 Flax implementation of HDemucs audio source separation model
 
+## Dev
+
+Install only base deps (needed for checkpoint compilation and inference):
+
+`uv sync --no-dev`
+
 ## Tests
 
 `pytest -k 'not speed' --durations=0 -v`

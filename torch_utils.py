@@ -1,5 +1,4 @@
 import torch
-import jax.numpy as jnp
 import logging
 from collections import defaultdict
 import flax.nnx as nnx
@@ -7,6 +6,7 @@ import flax.nnx as nnx
 from module import Module
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, Identity, TorchConv, TorchConv2d, HybridDecoderLayer, HDemucs, GroupNorm
 from conv import TransposedConv1d, TransposedConv2d
+from utils import save_checkpoint
 
 from torchaudio.models._hdemucs import _ScaledEmbedding, _LayerScale, _LocalState, _BLSTM, _DConv, _HEncLayer, _HDecLayer
 from torchaudio.models._hdemucs import HDemucs as TorchHDemucs
@@ -14,6 +14,14 @@ from torchaudio.models._hdemucs import HDemucs as TorchHDemucs
 logger = logging.getLogger(__name__)
 logging.getLogger('jax').setLevel(logging.WARNING)
 logging.getLogger('torch').setLevel(logging.WARNING)
+
+def create_and_save_checkpoint(save_dir: str):
+    from torchaudio.models._hdemucs import HDemucs as TorchHDemucs
+
+    model = HDemucs(rngs=nnx.Rngs(0))
+    torch_model = TorchHDemucs(sources=model.sources)
+    model = copy_torch_params(torch_model, model)
+    save_checkpoint(model, save_dir)
 
 
 def validate_instance(target_module: Module, reference_class: type, torch_module: torch.nn.Module):
