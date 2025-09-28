@@ -8,3 +8,5 @@ __pycache__
 checkpoints/
 *.lock.txt
 notebooks/
+*.bin
+.DS_Store

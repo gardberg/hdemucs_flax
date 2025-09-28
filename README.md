@@ -11,15 +11,12 @@ Flax implementation of HDemucs audio source separation model
 ## TODO
 
 - [x] Switch to regular nnx.GroupNorm instead of TorchGroupNorm
-  - [ ] Figure out why we're getting numerical diff for it
-  - [ ] Move reshape out of class
 - [x] Rewrite TorchConv, TorchConv2d with Module
-  - [ ] Move reshape out of class
 - [x] Rewrite transposed convs to be jit compilable
-- [ ] Write logic for comparing numerical diffs (torch_hook.ipynb)
+- [x] Write logic for comparing numerical diffs (torch_hook.ipynb)
 
 - [x] HDemucs
-  - [ ] Utility tests
+  - [x] Utility tests
   - [x] e2e-tests
   - [x] Numerical diff test
   - [x] JIT-compilation tests
@@ -40,6 +37,8 @@ Flax implementation of HDemucs audio source separation model
 - [ ] Pyright type checking
 - [ ] Shape annotations
 - [x] Custom interceptor logic
+- [ ] Dockerized inference API
+- [ ] CI tests
 
 ## Notes
 
@@ -51,6 +50,14 @@ discarding extra length outside of blstm? it is also dependent on input shape
 
 - Approximate GELU / GLU?
 - Fast variance via flax groupnorm (fused kernel)?
+- Export / serialize and run via IREE-compiled model?
+
+#### Api
+
+To build API image, run:
+
+`docker build -t hdemucs_api .`
+
 
 #### Misc
 

@@ -1,18 +1,15 @@
-from typing import Union, List
+from typing import Union
 from pathlib import Path
 import jax.numpy as jnp
 import jax
 from jax import lax
-
-from utils import load_checkpoint
-
-from torchaudio.transforms import Fade
+from jax import export
 
 
 class Separator:
     def __init__(
         self,
-        checkpoint_dir: Union[str, Path],
+        checkpoint_dir: Union[str, Path] = None,
         chunk_size: int = 30,
         sample_rate: int = 44100,
         overlap: float = 0.1,
@@ -26,17 +23,56 @@ class Separator:
             sample_rate: Sample rate of the audio.
             overlap: Fraction of chunk_size that is overlapped.
         """
-        self.model = load_checkpoint(checkpoint_dir)
+        self.model = None
+        self._compiled_separate = None
         self.sample_rate = sample_rate
+        self.chunk_size = chunk_size
         self.chunk_size_samples = int(chunk_size * sample_rate)
         self.overlap_samples = int(self.chunk_size_samples * overlap)
         self.stride = self.chunk_size_samples - self.overlap_samples
 
+        self.fade_in = self._get_fade_in_array(self.chunk_size_samples, self.overlap_samples)[None, None, :]
+        self.fade_out = self._get_fade_out_array(self.chunk_size_samples, self.overlap_samples)[None, None, :]
+
+        if checkpoint_dir is not None:
+            self.load_and_compile(checkpoint_dir)
+
+    def load_and_compile(self, checkpoint_dir: Union[str, Path]):
+        from utils import load_checkpoint
+
+        self.model = load_checkpoint(checkpoint_dir)
+
         self._compiled_separate = jax.jit(self.separate)
         self._compiled_separate(jnp.zeros((2, self.chunk_size_samples)))
 
-        self.fade_in = self._get_fade_in_array(self.chunk_size_samples, self.overlap_samples)[None, None, :]
-        self.fade_out = self._get_fade_out_array(self.chunk_size_samples, self.overlap_samples)[None, None, :]
+
+    def export_compiled_separate(self, save_path: Union[str, Path] = None):
+        exported = export.export(self._compiled_separate)(
+            jax.ShapeDtypeStruct((2, self.chunk_size_samples), jnp.float32))
+
+        serialized = exported.serialize()
+
+        save_name = f"compiled_separate_{self.chunk_size}.bin"
+
+        if save_path is None:
+            save_path = "."
+        
+        save_path = Path(save_path)
+        save_path.mkdir(exist_ok=True)
+        
+        full_path = save_path / save_name
+        
+        with open(full_path, "wb") as f:
+            f.write(serialized)
+   
+    def load_compiled_separate(self, path: Union[str, Path]):
+        # path: path to serialized exported fn to load
+
+        with open(path, "rb") as f:
+            serialized = f.read()
+
+        deserialized = export.deserialize(serialized)
+        self._compiled_separate = deserialized.call
 
 
     def separate_longform(self, waveform: jnp.ndarray) -> jnp.ndarray:
@@ -54,7 +90,7 @@ class Separator:
         assert n_channels == 2, f"Got invalid number of channels: {n_channels} != 2"
 
         # run separation directly on padded input if its short enough
-        if original_length < self.chunk_size_samples:
+        if original_length <= self.chunk_size_samples:
             padded_waveform = jnp.pad(waveform, ((0, 0), (0, self.chunk_size_samples - original_length)))
             separated_padded = self._compiled_separate(padded_waveform)
             return separated_padded[:, :, :original_length]
@@ -123,12 +159,16 @@ class Separator:
         return final_output[:, :, :original_length]
 
     def _reshape_input(self, waveform: jnp.ndarray) -> jnp.ndarray:
-        ref = waveform.mean(0)
-        waveform_n = (waveform - ref.mean()) / ref.std()
-        waveform_n = waveform_n[None, ...]
-        return waveform_n
+        return waveform[None, ...]
 
     def separate(self, waveform: jnp.ndarray) -> jnp.ndarray:
+        """
+        Args:
+            waveform: Waveform to separate. Shape: (n_channels, length)
+
+        Returns:
+            Separated waveform. Shape: (4, n_channels, length)
+        """
         waveform_n = self._reshape_input(waveform)
         output = self.model(waveform_n) 
         return output.reshape(4, 2, -1)
