@@ -8,6 +8,12 @@ Install only base deps (needed for checkpoint compilation and inference):
 
 `uv sync --no-dev`
 
+Test build the package: `uv build`
+
+Use package in another repo:
+
+`uv add git+https://github.com/gardberg/hdemucs_flax.git`
+
 ## Tests
 
 `pytest -k 'not speed' --durations=0 -v`
