@@ -13,6 +13,7 @@ class Separator:
         chunk_size: int = 30,
         sample_rate: int = 44100,
         overlap: float = 0.1,
+        backend: str = None,
     ):
         """
         Performs chunked audio source separation.
@@ -23,6 +24,7 @@ class Separator:
             sample_rate: Sample rate of the audio.
             overlap: Fraction of chunk_size that is overlapped.
         """
+        self.backend = jax.default_backend() if backend is None else backend
         self.model = None
         self._compiled_separate = None
         self.sample_rate = sample_rate
@@ -38,11 +40,15 @@ class Separator:
             self.load_and_compile(checkpoint_dir)
 
     def load_and_compile(self, checkpoint_dir: Union[str, Path]):
+        """
+        backend: cpu or gpu
+        """
+
         from utils import load_checkpoint
 
         self.model = load_checkpoint(checkpoint_dir)
 
-        self._compiled_separate = jax.jit(self.separate)
+        self._compiled_separate = jax.jit(self.separate, backend=self.backend)
         self._compiled_separate(jnp.zeros((2, self.chunk_size_samples)))
 
 
@@ -52,7 +58,7 @@ class Separator:
 
         serialized = exported.serialize()
 
-        save_name = f"compiled_separate_{self.chunk_size}.bin"
+        save_name = f"compiled_separate_{self.chunk_size}_{self.backend}.bin"
 
         if save_path is None:
             save_path = "."

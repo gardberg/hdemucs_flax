@@ -14,6 +14,10 @@ Use package in another repo:
 
 `uv add git+https://github.com/gardberg/hdemucs_flax.git`
 
+This installs all the modules at root level! So use them via:
+
+`from separate import Separator` for example.
+
 ## Tests
 
 `pytest -k 'not speed' --durations=0 -v`
