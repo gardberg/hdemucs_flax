@@ -52,7 +52,7 @@ class Separator:
         self._compiled_separate(jnp.zeros((2, self.chunk_size_samples)))
 
 
-    def export_compiled_separate(self, save_path: Union[str, Path] = None):
+    def export_compiled_separate(self, save_path: Union[str, Path] = None) -> Path:
         exported = export.export(self._compiled_separate)(
             jax.ShapeDtypeStruct((2, self.chunk_size_samples), jnp.float32))
 
@@ -70,6 +70,8 @@ class Separator:
         
         with open(full_path, "wb") as f:
             f.write(serialized)
+
+        return full_path
    
     def load_compiled_separate(self, path: Union[str, Path]):
         # path: path to serialized exported fn to load
