@@ -47,6 +47,7 @@ only-include = [
     "separate.py",
     "__init__.py",
     "README.md",
+    "torch_utils.py"
 ]
 [tool.pytest.ini_options]
 testpaths = [
