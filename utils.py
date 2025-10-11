@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from collections import defaultdict
 from typing import Callable, List, Union
@@ -13,7 +14,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 logging.getLogger('jax').setLevel(logging.WARNING)
-
 
 
 ### Hooks ###
@@ -131,6 +131,8 @@ def save_checkpoint(model: Module, checkpoint_dir: Union[str, Path]) -> Path:
     )
 
     model_state = nnx.state(model)
+    
+    logger.info(f"Saving checkpoint to {checkpoint_dir} with dtypes: {_get_unique_dtypes(model_state)}")
 
     checkpoint_manager.save(
         1, args=ocp.args.Composite(state=ocp.args.PyTreeSave(model_state))
@@ -139,6 +141,13 @@ def save_checkpoint(model: Module, checkpoint_dir: Union[str, Path]) -> Path:
 
     return checkpoint_dir
 
+def _get_unique_dtypes(state: nnx.State) -> set:
+    dtypes = set()
+    for param in jax.tree.leaves(state):
+        if hasattr(param, 'dtype'):
+            dtypes.add(str(param.dtype))
+
+    return dtypes
 
 def load_checkpoint(checkpoint_dir: Union[str, Path]) -> HDemucs:
     """
@@ -164,5 +173,7 @@ def load_checkpoint(checkpoint_dir: Union[str, Path]) -> HDemucs:
         )
 
     model = nnx.merge(graph, restored['state'])
+    
+    logger.info(f"Loaded checkpoint from {checkpoint_dir} with dtypes: {_get_unique_dtypes(nnx.state(model))}")
 
     return model

@@ -289,7 +289,8 @@ def copy_single_direction(torch_lstm: torch.nn.LSTM, flax_cell: nnx.RNN, layer_i
 
 
 def tensor_to_param(torch_tensor: torch.Tensor) -> nnx.Param:
-    return nnx.Param(value=torch_tensor.detach().numpy())
+    numpy_array = torch_tensor.detach().half().numpy()
+    return nnx.Param(value=numpy_array)
 
 
 # torch shape hook
