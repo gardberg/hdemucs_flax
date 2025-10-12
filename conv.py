@@ -54,7 +54,7 @@ class TransposedConv1d(Module):
 
     result = jax.lax.conv_transpose(
       x,
-      self.weight,
+      self.weight.value.astype(x.dtype),
       strides=(self.strides,),
       padding='VALID',
       rhs_dilation=(self.dilation,),
@@ -62,7 +62,7 @@ class TransposedConv1d(Module):
     )
 
     if self.bias is not None:
-      result = result + self.bias.reshape(1, 1, -1) # add bias to each output channel
+      result = result + self.bias.value.astype(x.dtype).reshape(1, 1, -1) # add bias to each output channel
 
     return result
 
@@ -103,7 +103,7 @@ class TransposedConv2d(Module):
 
     result = jax.lax.conv_transpose(
       x,
-      self.weight,
+      self.weight.value.astype(x.dtype),
       strides=self.strides,
       padding='VALID',
       rhs_dilation=(self.dilation, self.dilation),
@@ -111,6 +111,6 @@ class TransposedConv2d(Module):
     )
 
     if self.bias is not None:
-      result = result + self.bias.reshape(1, 1, 1, -1)
+      result = result + self.bias.value.astype(x.dtype).reshape(1, 1, 1, -1)
 
     return result

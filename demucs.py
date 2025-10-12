@@ -19,10 +19,11 @@ class ScaledEmbedding(Module):
         n_emb: int = 512,
         emb_dim: int = 48,
         scale: float = 10.0,
+        dtype: jnp.dtype = jnp.float32,
         *,
         rngs: nnx.Rngs,
     ):
-        self.embedding = nnx.Embed(n_emb, emb_dim, rngs=rngs)
+        self.embedding = nnx.Embed(n_emb, emb_dim, rngs=rngs, dtype=dtype)
         self.scale = scale
 
         # Don't care about 'smooth' initialization here
@@ -33,7 +34,8 @@ class ScaledEmbedding(Module):
         x: (n_emb,) indices of embeddings to look up
         return (n_emb, emb_dim)
         """
-        return self.embedding(x) * self.scale
+        out = self.embedding(x) * self.scale
+        return out
 
 
 class Identity(Module):
@@ -126,10 +128,11 @@ class LocalState(Module):
         return jnp.transpose(out_flax, (0, 2, 1))
 
 class BidirectionalLSTM(Module):
-    def __init__(self, num_layers: int, hidden_size: int, input_size: int, *, rngs: nnx.Rngs):
+    def __init__(self, num_layers: int, hidden_size: int, input_size: int, dtype: jnp.dtype = jnp.float32, *, rngs: nnx.Rngs):
         self.num_layers = num_layers
         self.hidden_size = hidden_size
         self.input_size = input_size
+        self.dtype = dtype
 
         self.layers = []
 
@@ -141,7 +144,7 @@ class BidirectionalLSTM(Module):
             bi_layer = nnx.Bidirectional(
                 forward_rnn=forward_lstm,
                 backward_rnn=backward_lstm,
-                merge_fn=lambda f, b: jnp.concatenate([f, b], axis=-1), # concat along feature dim
+                merge_fn=lambda f, b: jnp.concatenate([f, b], axis=-1, dtype=dtype), # concat along feature dim
                 time_major=False, # Batch dim first
             )
 
@@ -165,11 +168,12 @@ class BLSTM(Module):
         layers: int = 1,
         skip: bool = False,
         static_lengths: Optional[Dict[int, int]] = None,
+        dtype: jnp.dtype = jnp.float32,
         *,
         rngs: nnx.Rngs,
     ):
         self.max_steps = 200
-        self.lstm = BidirectionalLSTM(num_layers=layers, hidden_size=dim, input_size=dim, rngs=rngs)
+        self.lstm = BidirectionalLSTM(num_layers=layers, hidden_size=dim, input_size=dim, dtype=dtype, rngs=rngs)
         self.linear = nnx.Linear(2 * dim, dim, rngs=rngs)
         self.skip = skip
         self.static_lengths = static_lengths
@@ -296,8 +300,10 @@ class GroupNorm(Module, nnx.GroupNorm):
         """
         x_flax = put_channel_dim_last(x)
         
-        # Apply GroupNorm
+        x_flax = jnp.astype(x_flax, jnp.float32)
         out_flax = super().__call__(x_flax)
+        
+        out_flax = jnp.astype(out_flax, x.dtype)
         
         out = put_channel_dim_second(out_flax)
         return out
@@ -315,12 +321,14 @@ class DConv(Module):
         lstm: bool = False,
         kernel_size: int = 3,
         static_blstm_lengths: Optional[Dict[int, int]] = None,
+        dtype: jnp.dtype = jnp.float32,
         *,
         rngs: nnx.Rngs,
     ):
         self.channels = channels
         self.compress = compress
         self.depth = abs(depth)
+        self.dtype = dtype
 
         dilate = depth > 0
 
@@ -348,7 +356,7 @@ class DConv(Module):
                 LayerScale(channels, init=1e-4),
             ]
             if attn: mods.insert(3, LocalState(hidden, heads=heads, ndecay=ndecay, rngs=rngs))
-            if lstm: mods.insert(3, BLSTM(hidden, layers=2, skip=True, static_lengths=static_blstm_lengths, rngs=rngs))
+            if lstm: mods.insert(3, BLSTM(hidden, layers=2, skip=True, static_lengths=static_blstm_lengths, dtype=dtype, rngs=rngs))
             
             self.layers.append(mods)
         
@@ -380,6 +388,7 @@ class HybridEncoderLayer(Module):
         dconv_kw: Optional[Dict[str, Any]] = None,
         pad: bool = True,
         static_blstm_lengths: Optional[Dict[int, int]] = None,
+        dtype: jnp.dtype = jnp.float32,
         *,
         rngs: nnx.Rngs,
     ):
@@ -390,6 +399,8 @@ class HybridEncoderLayer(Module):
         norm_fn = _get_norm_fn(norm_type, num_groups=norm_groups, rngs=rngs)
 
         pad_val = kernel_size // 4 if pad else 0
+
+        self.dtype = dtype
 
         self.freq = freq
         self.kernel_size = kernel_size
@@ -416,7 +427,7 @@ class HybridEncoderLayer(Module):
             rewrite_kernel_size = 1 + 2 * context
             self.rewrite = self.conv_class(out_channels, 2 * out_channels, rewrite_kernel_size, padding=context, rngs=rngs)
             self.norm2 = norm_fn(2 * out_channels)
-            self.dconv = DConv(out_channels, **dconv_kw, static_blstm_lengths=static_blstm_lengths, rngs=rngs)
+            self.dconv = DConv(out_channels, **dconv_kw, static_blstm_lengths=static_blstm_lengths, dtype=dtype, rngs=rngs)
 
     def __call__(self, x: Array, inject: Optional[Array] = None) -> Array:
         """
@@ -434,12 +445,15 @@ class HybridEncoderLayer(Module):
             B, C, Fr, T = x.shape
             x = x.reshape(B, -1, T)
 
+
         if not self.freq:
             le = x.shape[-1]
             if not le % self.stride == 0:
                 x = jnp.pad(x, ((0, 0), (0, 0), (0, self.stride - (le % self.stride))))
 
+
         y = self.conv(x)
+
 
         if self.empty:
             return y
@@ -451,6 +465,7 @@ class HybridEncoderLayer(Module):
             y = y + inject
 
         y: Array = nnx.gelu(self.norm1(y), approximate=False)
+
         if self.freq:
             B, C, Fr, T = y.shape
             y = y.transpose(0, 2, 1, 3).reshape(-1, C, T)
@@ -612,6 +627,7 @@ class HDemucs(Module):
         dconv_attn: int = 4,
         dconv_lstm: int = 4,
         static_blstm_lengths: Optional[Dict[int, int]] = None, # TODO: Remove
+        dtype: jnp.dtype = jnp.float32,
         *,
         rngs: nnx.Rngs,
     ):
@@ -629,6 +645,8 @@ class HDemucs(Module):
         self.channels = channels
         self.nfft = nfft
         self.depth = depth
+
+        self.dtype = dtype
 
         self.kernel_size = kernel_size
         self.stride = stride
@@ -700,12 +718,12 @@ class HDemucs(Module):
                 chout = chout_z
 
             # only this layer uses BLSMTs
-            enc = HybridEncoderLayer(chin_z, chout_z, context=context_enc, **kw, static_blstm_lengths=self.static_blstm_lengths, rngs=rngs)
+            enc = HybridEncoderLayer(chin_z, chout_z, context=context_enc, **kw, static_blstm_lengths=self.static_blstm_lengths, dtype=self.dtype, rngs=rngs)
             if freq:
                 if last_freq is True and nfft == 2048:
                     kwt["stride"] = 2
                     kwt["kernel_size"] = 4
-                tenc = HybridEncoderLayer(chin, chout, context=context_enc, empty=last_freq, **kwt, rngs=rngs)
+                tenc = HybridEncoderLayer(chin, chout, context=context_enc, empty=last_freq, **kwt, dtype=self.dtype, rngs=rngs)
                 self.time_encoder.append(tenc)
 
             self.freq_encoder.append(enc)
@@ -728,7 +746,7 @@ class HDemucs(Module):
                 else:
                     freqs //= stride
             if index == 0 and freq_emb:
-                self.freq_emb = ScaledEmbedding(freqs, chin_z, scale=emb_scale, rngs=rngs)
+                self.freq_emb = ScaledEmbedding(freqs, chin_z, scale=emb_scale, dtype=self.dtype, rngs=rngs)
                 self.freq_emb_scale = freq_emb
 
     def _normalize(self, x: Array, axis: Tuple[int, ...] = (1, 2, 3)) -> Tuple[Array, float, float]:
@@ -753,11 +771,13 @@ class HDemucs(Module):
         
         # transform input for freq branch
 
+        input_dtype = input.dtype
+
         x = input
         length = x.shape[-1]
 
         z = self._spec(input)
-        mag = complex_spec_to_real(z)
+        mag = complex_spec_to_real(z, dtype=self.dtype)
         x = mag
 
         B, C, F, T = x.shape
@@ -836,7 +856,7 @@ class HDemucs(Module):
         xt = xt.reshape(B, S, -1, length)
         xt = xt * xt_std[:, None] + xt_mean[:, None]
         x = xt + x
-        return x
+        return x.astype(input_dtype)
             
             
     def _spec(self, x: Array) -> Array:

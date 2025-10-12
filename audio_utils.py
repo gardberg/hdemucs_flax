@@ -23,9 +23,9 @@ def signal_to_spectrogram(x: Array, n_fft: int = 512, hop_length: int = 128, pad
     pad_size = nperseg // 2
     x = jnp.pad(x, ((0, 0), (pad_size, pad_size)), mode='reflect')
 
-    # Compute STFT
+    # Compute STFT in float32
     _, _, z = jsig.stft(
-        x,
+        jnp.astype(x, jnp.float32),
         fs=1.0,
         window='hann',  
         nperseg=nperseg,
@@ -70,8 +70,7 @@ def spectrogram_to_signal(z: Array, hop_length: int = 128, length: int = 0, pad:
     # Handle empty input case
     else: # z.size == 0
         target_len = length if length > 0 else 0
-        return jnp.zeros((*remaining_dims, target_len), dtype=jnp.float32)
-
+        return jnp.zeros((*remaining_dims, target_len))
 
     n_fft_istft = 2 * freqs - 2
     nperseg_istft = n_fft_istft // (1 + pad)
@@ -110,26 +109,32 @@ def spectrogram_to_signal(z: Array, hop_length: int = 128, length: int = 0, pad:
     return x
 
 
-def complex_spec_to_real(z: Array) -> Array:
+def complex_spec_to_real(z: Array, dtype = jnp.float32) -> Array:
     """
     Reshapes complex spectrogram to real spectrogram with double the channels
 
     Args:
         z: (batch_size, channels, freqs, time_steps) of dtype complex64
     Returns:
-        (batch_size, channels * 2, freqs, time_steps) of dtype float32
+        (batch_size, channels * 2, freqs, time_steps) of dtype float16
     """
     B, C, F, T = z.shape
     m = jnp.stack([jnp.real(z), jnp.imag(z)], axis=-1)
+
+    # convert back to target dtype if needed
     m = jnp.transpose(m, (0, 1, 4, 2, 3))
-    return m.reshape(B, C * 2, F, T)
+    m = m.reshape(B, C * 2, F, T)
+
+    m = jnp.astype(m, dtype)
+
+    return m
 
 def real_spec_to_complex(m: Array) -> Array:
     """
     Reshapes real spectrogram to complex spectrogram
 
     Args:
-        m: (batch_size, extra_dim, channels, freqs, time_steps) of dtype float32
+        m: (batch_size, extra_dim, channels, freqs, time_steps) of dtype float16/float32
     Returns:
         (batch_size, extra_dim, channels / 2, freqs, time_steps) of dtype complex64
     """

@@ -14,6 +14,7 @@ class Separator:
         sample_rate: int = 44100,
         overlap: float = 0.1,
         backend: str = None,
+        dtype: jnp.dtype = jnp.float32,
     ):
         """
         Performs chunked audio source separation.
@@ -33,6 +34,8 @@ class Separator:
         self.overlap_samples = int(self.chunk_size_samples * overlap)
         self.stride = self.chunk_size_samples - self.overlap_samples
 
+        self.dtype = dtype
+
         self.fade_in = self._get_fade_in_array(self.chunk_size_samples, self.overlap_samples)[None, None, :]
         self.fade_out = self._get_fade_out_array(self.chunk_size_samples, self.overlap_samples)[None, None, :]
 
@@ -46,15 +49,16 @@ class Separator:
 
         from utils import load_checkpoint
 
-        self.model = load_checkpoint(checkpoint_dir)
+        self.model = load_checkpoint(checkpoint_dir, self.dtype)
 
         self._compiled_separate = jax.jit(self.separate, backend=self.backend)
-        self._compiled_separate(jnp.zeros((2, self.chunk_size_samples)))
+        self._compiled_separate(jnp.zeros((2, self.chunk_size_samples), dtype=self.dtype))
 
 
     def export_compiled_separate(self, save_path: Union[str, Path] = None) -> Path:
+
         exported = export.export(self._compiled_separate)(
-            jax.ShapeDtypeStruct((2, self.chunk_size_samples), jnp.float32))
+            jax.ShapeDtypeStruct((2, self.chunk_size_samples), self.dtype))
 
         serialized = exported.serialize()
 
@@ -178,15 +182,16 @@ class Separator:
             Separated waveform. Shape: (4, n_channels, length)
         """
         waveform_n = self._reshape_input(waveform)
-        output = self.model(waveform_n) 
+        output = self.model(waveform_n)
+        output = output.astype(waveform.dtype)
         return output.reshape(4, 2, -1)
 
     def _get_fade_in_array(self, waveform_length: int, fade_in_len: int) -> jnp.ndarray:
-        fade = jnp.linspace(0., 1., fade_in_len)
-        ones = jnp.ones(waveform_length - fade_in_len)
-        return jnp.concatenate((fade, ones))
+        fade = jnp.linspace(0., 1., fade_in_len, dtype=self.dtype)
+        ones = jnp.ones(waveform_length - fade_in_len, dtype=self.dtype)
+        return jnp.concatenate((fade, ones), dtype=self.dtype)
 
     def _get_fade_out_array(self, waveform_length: int, fade_out_len: int) -> jnp.ndarray:
-        fade = jnp.linspace(1., 0., fade_out_len)
-        ones = jnp.ones(waveform_length - fade_out_len)
-        return jnp.concatenate((ones, fade))
+        fade = jnp.linspace(1., 0., fade_out_len, dtype=self.dtype)
+        ones = jnp.ones(waveform_length - fade_out_len, dtype=self.dtype)
+        return jnp.concatenate((ones, fade), dtype=self.dtype)

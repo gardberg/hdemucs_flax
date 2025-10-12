@@ -2,6 +2,7 @@ import torch
 import logging
 from collections import defaultdict
 import flax.nnx as nnx
+import jax.numpy as jnp
 
 from module import Module
 from demucs import ScaledEmbedding, LayerScale, LocalState, BidirectionalLSTM, BLSTM, DConv, HybridEncoderLayer, Identity, TorchConv, TorchConv2d, HybridDecoderLayer, HDemucs, GroupNorm
@@ -15,12 +16,12 @@ logger = logging.getLogger(__name__)
 logging.getLogger('jax').setLevel(logging.WARNING)
 logging.getLogger('torch').setLevel(logging.WARNING)
 
-def create_and_save_checkpoint(save_dir: str):
+def create_and_save_checkpoint(save_dir: str, dtype=jnp.float32):
     from torchaudio.models._hdemucs import HDemucs as TorchHDemucs
 
     model = HDemucs(rngs=nnx.Rngs(0))
     torch_model = TorchHDemucs(sources=model.sources)
-    model = copy_torch_params(torch_model, model)
+    model = copy_torch_params(torch_model, model, dtype)
     save_checkpoint(model, save_dir)
 
 
@@ -32,7 +33,7 @@ def validate_shapes(target_shape: tuple, reference_shape: tuple):
     if target_shape != reference_shape:
         raise ValueError(f"Attempted to convert torch module with shape {target_shape} to nnx_module with shape {reference_shape}")
 
-def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> nnx.Module:
+def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module, dtype=jnp.float32) -> nnx.Module:
     """
     Copies the parameters from a pytorch module and returns the corresponding nnx module.
     """
@@ -42,7 +43,7 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         validate_instance(nnx_module, ScaledEmbedding, torch_module)
         validate_shapes(torch_module.weight.shape, nnx_module.embedding.embedding.shape)
 
-        nnx_module.embedding.embedding = tensor_to_param(torch_module.embedding.weight)
+        nnx_module.embedding.embedding = tensor_to_param(torch_module.embedding.weight, dtype)
         nnx_module.scale = int(torch_module.scale)
         return nnx_module
 
@@ -55,10 +56,10 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         weight_p = torch_module.weight.permute(2, 1, 0)
         validate_shapes(weight_p.shape, nnx_module.kernel.shape)
 
-        nnx_module.kernel = tensor_to_param(weight_p)
+        nnx_module.kernel = tensor_to_param(weight_p, dtype)
         if torch_module.bias is not None:
             validate_shapes(torch_module.bias.shape, nnx_module.bias.shape)
-            nnx_module.bias = tensor_to_param(torch_module.bias)
+            nnx_module.bias = tensor_to_param(torch_module.bias, dtype)
 
         return nnx_module
 
@@ -68,10 +69,10 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         weight_p = torch_module.weight.permute(2, 3, 1, 0)
         validate_shapes(weight_p.shape, nnx_module.kernel.shape)
 
-        nnx_module.kernel = tensor_to_param(weight_p)
+        nnx_module.kernel = tensor_to_param(weight_p, dtype)
         if torch_module.bias is not None:
             validate_shapes(torch_module.bias.shape, nnx_module.bias.shape)
-            nnx_module.bias = tensor_to_param(torch_module.bias)
+            nnx_module.bias = tensor_to_param(torch_module.bias, dtype)
 
         return nnx_module
 
@@ -82,11 +83,11 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
     if isinstance(torch_module, _LocalState):
         validate_instance(nnx_module, LocalState, torch_module)
 
-        nnx_module.content = copy_torch_params(torch_module.content, nnx_module.content)
-        nnx_module.query = copy_torch_params(torch_module.query, nnx_module.query)
-        nnx_module.key = copy_torch_params(torch_module.key, nnx_module.key)
-        nnx_module.query_decay = copy_torch_params(torch_module.query_decay, nnx_module.query_decay)
-        nnx_module.proj = copy_torch_params(torch_module.proj, nnx_module.proj)
+        nnx_module.content = copy_torch_params(torch_module.content, nnx_module.content, dtype)
+        nnx_module.query = copy_torch_params(torch_module.query, nnx_module.query, dtype)
+        nnx_module.key = copy_torch_params(torch_module.key, nnx_module.key, dtype)
+        nnx_module.query_decay = copy_torch_params(torch_module.query_decay, nnx_module.query_decay, dtype)
+        nnx_module.proj = copy_torch_params(torch_module.proj, nnx_module.proj, dtype)
 
         return nnx_module
 
@@ -96,10 +97,10 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         weight_t = torch_module.weight.transpose(0, 1)
         validate_shapes(weight_t.shape, nnx_module.kernel.shape)
 
-        nnx_module.kernel = tensor_to_param(weight_t)
+        nnx_module.kernel = tensor_to_param(weight_t, dtype)
         if torch_module.bias is not None:
             validate_shapes(torch_module.bias.shape, nnx_module.bias.shape)
-            nnx_module.bias = tensor_to_param(torch_module.bias)
+            nnx_module.bias = tensor_to_param(torch_module.bias, dtype)
 
         return nnx_module
 
@@ -108,15 +109,15 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         if not torch_module.bidirectional:
             raise ValueError("Only bidirectional LSTM is supported")
 
-        copy_torch_lstm_to_flax(torch_module, nnx_module)
+        copy_torch_lstm_to_flax(torch_module, nnx_module, dtype)
 
         return nnx_module
 
     if isinstance(torch_module, _BLSTM):
         validate_instance(nnx_module, BLSTM, torch_module)
 
-        nnx_module.lstm = copy_torch_params(torch_module.lstm, nnx_module.lstm)
-        nnx_module.linear = copy_torch_params(torch_module.linear, nnx_module.linear)
+        nnx_module.lstm = copy_torch_params(torch_module.lstm, nnx_module.lstm, dtype)
+        nnx_module.linear = copy_torch_params(torch_module.linear, nnx_module.linear, dtype)
 
         return nnx_module
 
@@ -127,7 +128,7 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
 
         layers = []
         for torch_layer, nnx_layer in zip(torch_module.layers, nnx_module.layers):
-            layers.append(copy_torch_params(torch_layer, nnx_layer))
+            layers.append(copy_torch_params(torch_layer, nnx_layer, dtype))
 
         nnx_module.layers = layers
 
@@ -138,7 +139,7 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
 
         layers = []
         for torch_layer, nnx_layer in zip(torch_module, nnx_module):
-            layers.append(copy_torch_params(torch_layer, nnx_layer))
+            layers.append(copy_torch_params(torch_layer, nnx_layer, dtype))
 
         nnx_module = layers
 
@@ -149,7 +150,7 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
 
         layers = []
         for torch_layer, nnx_layer in zip(torch_module, nnx_module):
-            layers.append(copy_torch_params(torch_layer, nnx_layer))
+            layers.append(copy_torch_params(torch_layer, nnx_layer, dtype))
 
         nnx_module = layers
 
@@ -161,8 +162,9 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         validate_shapes(torch_module.weight.shape, nnx_module.scale.shape)
         validate_shapes(torch_module.bias.shape, nnx_module.bias.shape)
 
-        nnx_module.scale = tensor_to_param(torch_module.weight)
-        nnx_module.bias = tensor_to_param(torch_module.bias)
+        # force float 32 here to keep stability
+        nnx_module.scale = tensor_to_param(torch_module.weight, jnp.float32)
+        nnx_module.bias = tensor_to_param(torch_module.bias, jnp.float32)
 
         return nnx_module
 
@@ -178,54 +180,54 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         validate_instance(nnx_module, LayerScale, torch_module)
         validate_shapes(torch_module.scale.shape, nnx_module.scale.shape)
 
-        nnx_module.scale = tensor_to_param(torch_module.scale)
+        nnx_module.scale = tensor_to_param(torch_module.scale, dtype)
 
         return nnx_module
 
     if isinstance(torch_module, _HEncLayer):
         validate_instance(nnx_module, HybridEncoderLayer, torch_module)
 
-        nnx_module.conv = copy_torch_params(torch_module.conv, nnx_module.conv)
-        nnx_module.norm1 = copy_torch_params(torch_module.norm1, nnx_module.norm1)
-        nnx_module.rewrite = copy_torch_params(torch_module.rewrite, nnx_module.rewrite)
-        nnx_module.norm2 = copy_torch_params(torch_module.norm2, nnx_module.norm2)
-        nnx_module.dconv = copy_torch_params(torch_module.dconv, nnx_module.dconv)
+        nnx_module.conv = copy_torch_params(torch_module.conv, nnx_module.conv, dtype)
+        nnx_module.norm1 = copy_torch_params(torch_module.norm1, nnx_module.norm1, dtype)
+        nnx_module.rewrite = copy_torch_params(torch_module.rewrite, nnx_module.rewrite, dtype)
+        nnx_module.norm2 = copy_torch_params(torch_module.norm2, nnx_module.norm2, dtype)
+        nnx_module.dconv = copy_torch_params(torch_module.dconv, nnx_module.dconv, dtype)
 
         return nnx_module
 
     if isinstance(torch_module, torch.nn.ConvTranspose1d):
         validate_instance(nnx_module, TransposedConv1d, torch_module)
         weight = torch_module.weight.permute(1, 0, 2) # flax expects (out, in, kernel)
-        nnx_module.weight = tensor_to_param(torch.flip(weight, dims=(-1,)))
+        nnx_module.weight = tensor_to_param(torch.flip(weight, dims=(-1,)), dtype)
 
         validate_shapes(weight.shape, nnx_module.weight.shape)
 
         if torch_module.bias is not None:
             validate_shapes(torch_module.bias.shape, nnx_module.bias.shape)
-            nnx_module.bias = tensor_to_param(torch_module.bias)
+            nnx_module.bias = tensor_to_param(torch_module.bias, dtype)
 
         return nnx_module
 
     if isinstance(torch_module, torch.nn.ConvTranspose2d):
         validate_instance(nnx_module, TransposedConv2d, torch_module)
         weight = torch_module.weight.permute(1, 0, 2, 3) # flax expects (out, in, kernel_height, kernel_width)
-        nnx_module.weight = tensor_to_param(torch.flip(weight, dims=(-2, -1)))
+        nnx_module.weight = tensor_to_param(torch.flip(weight, dims=(-2, -1)), dtype)
 
         validate_shapes(weight.shape, nnx_module.weight.shape)
 
         if torch_module.bias is not None:
             validate_shapes(torch_module.bias.shape, nnx_module.bias.shape)
-            nnx_module.bias = tensor_to_param(torch_module.bias)
+            nnx_module.bias = tensor_to_param(torch_module.bias, dtype)
 
         return nnx_module
 
     if isinstance(torch_module, _HDecLayer):
         validate_instance(nnx_module, HybridDecoderLayer, torch_module)
 
-        nnx_module.conv_tr = copy_torch_params(torch_module.conv_tr, nnx_module.conv_tr)
-        nnx_module.norm2 = copy_torch_params(torch_module.norm2, nnx_module.norm2)
-        nnx_module.rewrite = copy_torch_params(torch_module.rewrite, nnx_module.rewrite)
-        nnx_module.norm1 = copy_torch_params(torch_module.norm1, nnx_module.norm1)
+        nnx_module.conv_tr = copy_torch_params(torch_module.conv_tr, nnx_module.conv_tr, dtype)
+        nnx_module.norm2 = copy_torch_params(torch_module.norm2, nnx_module.norm2, dtype)
+        nnx_module.rewrite = copy_torch_params(torch_module.rewrite, nnx_module.rewrite, dtype)
+        nnx_module.norm1 = copy_torch_params(torch_module.norm1, nnx_module.norm1, dtype)
 
         return nnx_module
 
@@ -233,11 +235,11 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         validate_instance(nnx_module, HDemucs, torch_module)
         nnx_module: HDemucs
 
-        nnx_module.freq_emb = copy_torch_params(torch_module.freq_emb, nnx_module.freq_emb)
-        nnx_module.time_encoder = copy_torch_params(torch_module.time_encoder, nnx_module.time_encoder)
-        nnx_module.freq_encoder = copy_torch_params(torch_module.freq_encoder, nnx_module.freq_encoder)
-        nnx_module.freq_decoder = copy_torch_params(torch_module.freq_decoder, nnx_module.freq_decoder)
-        nnx_module.time_decoder = copy_torch_params(torch_module.time_decoder, nnx_module.time_decoder)
+        nnx_module.freq_emb = copy_torch_params(torch_module.freq_emb, nnx_module.freq_emb, dtype)
+        nnx_module.time_encoder = copy_torch_params(torch_module.time_encoder, nnx_module.time_encoder, dtype)
+        nnx_module.freq_encoder = copy_torch_params(torch_module.freq_encoder, nnx_module.freq_encoder, dtype)
+        nnx_module.freq_decoder = copy_torch_params(torch_module.freq_decoder, nnx_module.freq_decoder, dtype)
+        nnx_module.time_decoder = copy_torch_params(torch_module.time_decoder, nnx_module.time_decoder, dtype)
         
         return nnx_module
 
@@ -245,22 +247,22 @@ def copy_torch_params(torch_module: torch.nn.Module, nnx_module: nnx.Module) -> 
         raise ValueError(f"Coverting {type(torch_module)} to nnx.Module not implemented")
             
 
-def copy_torch_lstm_to_flax(torch_lstm: torch.nn.LSTM, flax_bilstm: BidirectionalLSTM):
+def copy_torch_lstm_to_flax(torch_lstm: torch.nn.LSTM, flax_bilstm: BidirectionalLSTM, dtype=jnp.float32):
     for layer_idx in range(torch_lstm.num_layers):
         # Get the bidirectional layer from flax module
         flax_layer: nnx.Bidirectional = flax_bilstm.layers[layer_idx]
 
         # Forward direction
         copy_single_direction(
-            torch_lstm, flax_layer.forward_rnn.cell, layer_idx, reverse=False
+            torch_lstm, flax_layer.forward_rnn.cell, layer_idx, reverse=False, dtype=dtype
         )
 
         # Backward direction
         copy_single_direction(
-            torch_lstm, flax_layer.backward_rnn.cell, layer_idx, reverse=True
+            torch_lstm, flax_layer.backward_rnn.cell, layer_idx, reverse=True, dtype=dtype
         )
 
-def copy_single_direction(torch_lstm: torch.nn.LSTM, flax_cell: nnx.RNN, layer_idx: int, reverse=False):
+def copy_single_direction(torch_lstm: torch.nn.LSTM, flax_cell: nnx.RNN, layer_idx: int, reverse=False, dtype=jnp.float32):
     suffix = "_reverse" if reverse else ""
     
     # Extract PyTorch parameters
@@ -280,16 +282,20 @@ def copy_single_direction(torch_lstm: torch.nn.LSTM, flax_cell: nnx.RNN, layer_i
     for idx, gate in enumerate(gate_names):
         # Input-hidden weights (no bias in flax)
         flax_w_ih = getattr(flax_cell, f'i{gate}_' if gate == 'f' else f'i{gate}')
-        flax_w_ih.kernel = tensor_to_param(w_ih_chunks[idx].transpose(0, 1))
+        flax_w_ih.kernel = tensor_to_param(w_ih_chunks[idx].transpose(0, 1), dtype)
 
         # Hidden-hidden weights (with bias in flax)
         flax_w_hh = getattr(flax_cell, f'h{gate}')
-        flax_w_hh.kernel = tensor_to_param(w_hh_chunks[idx].transpose(0, 1))
-        flax_w_hh.bias = tensor_to_param(b_ih_chunks[idx] + b_hh_chunks[idx])  # PyTorch splits biases, Flax combines them
+        flax_w_hh.kernel = tensor_to_param(w_hh_chunks[idx].transpose(0, 1), dtype)
+        flax_w_hh.bias = tensor_to_param(b_ih_chunks[idx] + b_hh_chunks[idx], dtype)  # PyTorch splits biases, Flax combines them
 
 
-def tensor_to_param(torch_tensor: torch.Tensor) -> nnx.Param:
-    numpy_array = torch_tensor.detach().half().numpy()
+def tensor_to_param(torch_tensor: torch.Tensor, dtype=jnp.float32) -> nnx.Param:
+    numpy_array = torch_tensor.detach().cpu().numpy()
+    if dtype == jnp.float16:
+        numpy_array = numpy_array.astype('float16')
+    elif dtype == jnp.float32:
+        numpy_array = numpy_array.astype('float32')
     return nnx.Param(value=numpy_array)
 
 

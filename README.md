@@ -24,6 +24,8 @@ This installs all the modules at root level! So use them via:
 
 `pytest --benchmark-skip` / `pytest --benchmark-only`
 
+To get logging directly in terminal run with `--log-cli-level=INFO -n0` (since we're using multithreaded)
+
 ## TODO
 
 - [x] Switch to regular nnx.GroupNorm instead of TorchGroupNorm

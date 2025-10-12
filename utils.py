@@ -32,7 +32,7 @@ def get_print_hook(log_to_file: bool = False) -> Callable:
 
 def print_shapes_hook(next_fun, args, kwargs, context, print_fn: Callable = print):
     """
-    Interceptor that prints input and output shapes and norms.
+    Interceptor that prints input and output shapes, dtypes and norms.
     Similar to PyTorch's forward hook.
     """
     # Get module name and class
@@ -46,25 +46,28 @@ def print_shapes_hook(next_fun, args, kwargs, context, print_fn: Callable = prin
     if args:
         for i, arg in enumerate(args):
             if hasattr(arg, 'shape'):
-                norm = float(jnp.linalg.norm(arg).item())
+                norm = float(jnp.linalg.norm(jnp.astype(arg, jnp.float32)).item())
                 norm_str = f"{norm:.6f}".rjust(12)
-                print_fn(f"  arg{i}:    {str(tuple(arg.shape)):<20}    norm: {norm_str}")
+                dtype_str = str(arg.dtype)
+                print_fn(f"  arg{i}:    {str(tuple(arg.shape)):<20}    dtype: {dtype_str:<10}    norm: {norm_str}")
     
     # Call the original method to get the output
     output = next_fun(*args, **kwargs)
     
     # Print output information
     if hasattr(output, 'shape'):
-        norm = float(jnp.linalg.norm(output).item())
+        norm = float(jnp.linalg.norm(jnp.astype(output, jnp.float32)).item())
         norm_str = f"{norm:.6f}".rjust(12)
-        print_fn(f"  out0:    {str(tuple(output.shape)):<20}    norm: {norm_str}")
+        dtype_str = str(output.dtype)
+        print_fn(f"  out0:    {str(tuple(output.shape)):<20}    dtype: {dtype_str:<10}    norm: {norm_str}")
         
     elif isinstance(output, tuple):
         for i, out in enumerate(output):
             if hasattr(out, 'shape'):
-                norm = float(jnp.linalg.norm(out).item())
+                norm = float(jnp.linalg.norm(jnp.astype(out, jnp.float32)).item())
                 norm_str = f"{norm:.6f}".rjust(12)
-                print_fn(f"  out{i}:    {str(tuple(out.shape)):<20}    norm: {norm_str}")
+                dtype_str = str(out.dtype)
+                print_fn(f"  out{i}:    {str(tuple(out.shape)):<20}    dtype: {dtype_str:<10}    norm: {norm_str}")
     
     return output
 
@@ -149,7 +152,7 @@ def _get_unique_dtypes(state: nnx.State) -> set:
 
     return dtypes
 
-def load_checkpoint(checkpoint_dir: Union[str, Path]) -> HDemucs:
+def load_checkpoint(checkpoint_dir: Union[str, Path], dtype: jnp.dtype = jnp.float32) -> HDemucs:
     """
     Loads a model from 'path' using Orbax CheckpointManager
     
@@ -160,7 +163,7 @@ def load_checkpoint(checkpoint_dir: Union[str, Path]) -> HDemucs:
 
     checkpoint_dir = checkpoint_dir.absolute()
 
-    abstract_model = nnx.eval_shape(lambda: HDemucs(rngs=nnx.Rngs(0)))
+    abstract_model = nnx.eval_shape(lambda: HDemucs(rngs=nnx.Rngs(0), dtype=dtype))
     graph, abstract_state = nnx.split(abstract_model)
 
     with ocp.CheckpointManager(
