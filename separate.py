@@ -62,7 +62,7 @@ class Separator:
 
         serialized = exported.serialize()
 
-        save_name = f"compiled_separate_{self.chunk_size}_{self.backend}.bin"
+        save_name = f"compiled_separate_{self.chunk_size}_{self.backend}_{self.dtype.__name__}.bin"
 
         if save_path is None:
             save_path = "."
