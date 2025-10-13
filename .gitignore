@@ -10,3 +10,4 @@ checkpoints/
 notebooks/
 *.bin
 .DS_Store
+checkpoint*

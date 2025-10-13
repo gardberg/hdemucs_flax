@@ -4,7 +4,14 @@ import jax.numpy as jnp
 import jax
 from jax import lax
 from jax import export
+import flax.nnx as nnx
 
+from demucs import HDemucs
+import logging
+
+from functools import partial
+
+logger = logging.getLogger(__name__)
 
 class Separator:
     def __init__(
@@ -51,11 +58,21 @@ class Separator:
 
         self.model = load_checkpoint(checkpoint_dir, self.dtype)
 
-        self._compiled_separate = jax.jit(self.separate, backend=self.backend)
+        logger.info("Compiling and warming up...")
+        @nnx.jit()
+        def separate_fn(waveform: jnp.ndarray, model: HDemucs):
+            return self.separate(model, waveform)
+
+        self._compiled_separate = partial(separate_fn, model=self.model)
+
+        # warmup
         self._compiled_separate(jnp.zeros((2, self.chunk_size_samples), dtype=self.dtype))
+        logger.info("JIT compilation and warmup done")
 
 
     def export_compiled_separate(self, save_path: Union[str, Path] = None) -> Path:
+
+        # NOTE probably doesnt work with new nnx.jit usage
 
         exported = export.export(self._compiled_separate)(
             jax.ShapeDtypeStruct((2, self.chunk_size_samples), self.dtype))
@@ -173,7 +190,7 @@ class Separator:
     def _reshape_input(self, waveform: jnp.ndarray) -> jnp.ndarray:
         return waveform[None, ...]
 
-    def separate(self, waveform: jnp.ndarray) -> jnp.ndarray:
+    def separate(self, model: HDemucs, waveform: jnp.ndarray) -> jnp.ndarray:
         """
         Args:
             waveform: Waveform to separate. Shape: (n_channels, length)
@@ -181,8 +198,10 @@ class Separator:
         Returns:
             Separated waveform. Shape: (4, n_channels, length)
         """
+
+        # explicitly use model as arg to include in jit args
         waveform_n = self._reshape_input(waveform)
-        output = self.model(waveform_n)
+        output = model(waveform_n)
         output = output.astype(waveform.dtype)
         return output.reshape(4, 2, -1)
 

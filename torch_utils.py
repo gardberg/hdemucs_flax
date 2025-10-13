@@ -19,7 +19,7 @@ logging.getLogger('torch').setLevel(logging.WARNING)
 def create_and_save_checkpoint(save_dir: str, dtype=jnp.float32):
     from torchaudio.models._hdemucs import HDemucs as TorchHDemucs
 
-    model = HDemucs(rngs=nnx.Rngs(0))
+    model = HDemucs(rngs=nnx.Rngs(0), dtype=dtype)
     torch_model = TorchHDemucs(sources=model.sources)
     model = copy_torch_params(torch_model, model, dtype)
     save_checkpoint(model, save_dir)
