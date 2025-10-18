@@ -22,6 +22,7 @@ class Separator:
         overlap: float = 0.1,
         backend: str = None,
         dtype: jnp.dtype = jnp.float32,
+        batched: bool = False,
     ):
         """
         Performs chunked audio source separation.
@@ -35,11 +36,13 @@ class Separator:
         self.backend = jax.default_backend() if backend is None else backend
         self.model = None
         self._compiled_separate = None
+        self._compiled_batched_separate = None
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
         self.chunk_size_samples = int(chunk_size * sample_rate)
         self.overlap_samples = int(self.chunk_size_samples * overlap)
         self.stride = self.chunk_size_samples - self.overlap_samples
+        self.batched = batched
 
         self.dtype = dtype
 
@@ -59,14 +62,24 @@ class Separator:
         self.model = load_checkpoint(checkpoint_dir, self.dtype)
 
         logger.info("Compiling and warming up...")
-        @nnx.jit()
-        def separate_fn(waveform: jnp.ndarray, model: HDemucs):
-            return self.separate(model, waveform)
 
-        self._compiled_separate = partial(separate_fn, model=self.model)
+        if self.batched:
+            @nnx.jit()
+            def batched_separate_fn(waveforms: jnp.ndarray, model: HDemucs):
+                outputs = model(waveforms)
+                return outputs.astype(waveforms.dtype)
+
+            self._compiled_batched_separate = partial(batched_separate_fn, model=self.model)
+            self._compiled_batched_separate(jnp.zeros((2, 2, self.chunk_size_samples), dtype=self.dtype))
+        else:
+            @nnx.jit()
+            def separate_fn(waveform: jnp.ndarray, model: HDemucs):
+                return self.separate(model, waveform)
+
+            self._compiled_separate = partial(separate_fn, model=self.model)
+            self._compiled_separate(jnp.zeros((2, self.chunk_size_samples), dtype=self.dtype))
 
         # warmup
-        self._compiled_separate(jnp.zeros((2, self.chunk_size_samples), dtype=self.dtype))
         logger.info("JIT compilation and warmup done")
 
 
@@ -186,6 +199,61 @@ class Separator:
         final_output, _ = lax.scan(scan_body, init_output, jnp.arange(n_chunks))
 
         return final_output[:, :, :original_length]
+
+    def separate_longform_batched(self, waveform: jnp.ndarray) -> jnp.ndarray:
+        """
+        waveform: shape (n_channels, length)
+        """
+        original_length = waveform.shape[1]
+        n_channels = waveform.shape[0]
+        assert n_channels == 2, f"Got invalid number of channels: {n_channels} != 2"
+
+        if original_length <= self.chunk_size_samples:
+            padded_waveform = jnp.pad(waveform, ((0, 0), (0, self.chunk_size_samples - original_length)))
+            batch = padded_waveform[None, ...]
+            separated_padded = self._compiled_batched_separate(batch)[0]
+            return separated_padded[:, :, :original_length]
+
+        total_strides = (original_length - self.overlap_samples + self.stride - 1) // self.stride
+        n_chunks = total_strides + 1
+        padded_length = self.overlap_samples + total_strides * self.stride
+        padding_amount = padded_length - original_length
+        padded_waveform = jnp.pad(waveform, ((0, 0), (0, padding_amount)))
+
+        chunks = []
+        for i in range(n_chunks):
+            s = i * self.stride
+            chunks.append(padded_waveform[:, s:s + self.chunk_size_samples])
+        chunks_batch = jnp.stack(chunks, axis=0)
+
+        separated_batch = self._compiled_batched_separate(chunks_batch)
+
+        idx = jnp.arange(n_chunks)
+        fades = jnp.where(
+            (idx[:, None, None, None] == 0),
+            self.fade_out,
+            jnp.where(
+                (idx[:, None, None, None] == n_chunks - 1),
+                self.fade_in,
+                self.fade_in * self.fade_out,
+            ),
+        )
+        separated_batch = separated_batch * fades
+
+        output = jnp.zeros((separated_batch.shape[1], separated_batch.shape[2], padded_length), dtype=jnp.float32)
+
+        K = separated_batch.shape[-1]
+        starts = idx * self.stride
+        time_idx = starts[:, None] + jnp.arange(K)[None, :]
+
+        updates = jnp.transpose(separated_batch, (0, 3, 1, 2))
+        dnums = lax.ScatterDimensionNumbers(
+            update_window_dims=(2, 3),
+            inserted_window_dims=(),
+            scatter_dims_to_operand_dims=(2,),
+        )
+        output = lax.scatter_add(output, time_idx[..., None], updates, dnums)
+        return output[:, :, :original_length]
 
     def _reshape_input(self, waveform: jnp.ndarray) -> jnp.ndarray:
         return waveform[None, ...]
