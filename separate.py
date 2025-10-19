@@ -23,6 +23,7 @@ class Separator:
         backend: str = None,
         dtype: jnp.dtype = jnp.float32,
         batched: bool = False,
+        compile_batches: int = 8
     ):
         """
         Performs chunked audio source separation.
@@ -43,11 +44,19 @@ class Separator:
         self.overlap_samples = int(self.chunk_size_samples * overlap)
         self.stride = self.chunk_size_samples - self.overlap_samples
         self.batched = batched
+        self.compile_batches = compile_batches
 
         self.dtype = dtype
 
         self.fade_in = self._get_fade_in_array(self.chunk_size_samples, self.overlap_samples)[None, None, :]
         self.fade_out = self._get_fade_out_array(self.chunk_size_samples, self.overlap_samples)[None, None, :]
+
+        if self.batched and compile_batches > 0:
+            min_length_samples = (compile_batches - 1) * self.stride + self.overlap_samples
+            max_length_samples = compile_batches * self.stride + self.overlap_samples - 1
+            min_length_sec = min_length_samples / sample_rate
+            max_length_sec = max_length_samples / sample_rate
+            logger.info(f"Compiling for {compile_batches} batches: audio length range {min_length_sec:.1f}s - {max_length_sec:.1f}s")
 
         if checkpoint_dir is not None:
             self.load_and_compile(checkpoint_dir)
@@ -70,7 +79,7 @@ class Separator:
                 return outputs.astype(waveforms.dtype)
 
             self._compiled_batched_separate = partial(batched_separate_fn, model=self.model)
-            self._compiled_batched_separate(jnp.zeros((2, 2, self.chunk_size_samples), dtype=self.dtype))
+            self._compiled_batched_separate(jnp.zeros((self.compile_batches, 2, self.chunk_size_samples), dtype=self.dtype))
         else:
             @nnx.jit()
             def separate_fn(waveform: jnp.ndarray, model: HDemucs):
@@ -217,6 +226,8 @@ class Separator:
 
         total_strides = (original_length - self.overlap_samples + self.stride - 1) // self.stride
         n_chunks = total_strides + 1
+        logger.info(f"Separating waveform of length {original_length / 44100:.0f}s using {n_chunks} chunks, each of length: {self.chunk_size}s")
+
         padded_length = (n_chunks - 1) * self.stride + self.chunk_size_samples
         padding_amount = padded_length - original_length
         padded_waveform = jnp.pad(waveform, ((0, 0), (0, padding_amount)))
