@@ -90,3 +90,27 @@ def test_jit_compare(dtype):
     print(f"{dtype = } batched runtime: {runtime_batched}")
 
     assert jnp.allclose(out_longform, out_batched, atol=1e-4 if dtype==jnp.float32 else 1e-2)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16])
+def test_jit_real(dtype):
+    import soundfile as sf
+    waveform, sample_rate = sf.read("testaudio_long.wav")
+    waveform_n = jnp.array(waveform).transpose()
+    print(f"waveform shape: {waveform_n.shape}")
+
+    checkpoint_dir = Path(f"./checkpoint_{dtype.__name__}")
+    separator = Separator(checkpoint_dir, dtype=dtype, batched=True)
+
+    out = separator.separate_longform_batched(waveform_n)
+    print(out.shape)
+
+    mask = ~jnp.isfinite(out)
+    if mask.any():
+        print("Nonfinite values in output:")
+        idx = jnp.argwhere(mask)
+        print(idx)
+        print(out[mask])
+
+    assert jnp.isfinite(out).all()
+

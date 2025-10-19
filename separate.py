@@ -140,7 +140,7 @@ class Separator:
         # pad last chunk so we can process all chunks in the same way
         total_strides = (original_length - self.overlap_samples + self.stride - 1) // self.stride
         n_chunks = total_strides + 1 # total number of chunks
-        padded_length = self.overlap_samples + total_strides * self.stride
+        padded_length = (n_chunks - 1) * self.stride + self.chunk_size_samples
         padding_amount = padded_length - original_length
         padded_waveform = jnp.pad(waveform, ((0, 0), (0, padding_amount))) # (2, padded_length)
 
@@ -202,7 +202,7 @@ class Separator:
 
     def separate_longform_batched(self, waveform: jnp.ndarray) -> jnp.ndarray:
         """
-        waveform: shape (n_channels, length)
+        waveform: shape (2, length)
         """
         original_length = waveform.shape[1]
         n_channels = waveform.shape[0]
@@ -212,18 +212,20 @@ class Separator:
             padded_waveform = jnp.pad(waveform, ((0, 0), (0, self.chunk_size_samples - original_length)))
             batch = padded_waveform[None, ...]
             separated_padded = self._compiled_batched_separate(batch)[0]
-            return separated_padded[:, :, :original_length]
+            result = separated_padded[:, :, :original_length]
+            return result
 
         total_strides = (original_length - self.overlap_samples + self.stride - 1) // self.stride
         n_chunks = total_strides + 1
-        padded_length = self.overlap_samples + total_strides * self.stride
+        padded_length = (n_chunks - 1) * self.stride + self.chunk_size_samples
         padding_amount = padded_length - original_length
         padded_waveform = jnp.pad(waveform, ((0, 0), (0, padding_amount)))
 
         chunks = []
         for i in range(n_chunks):
             s = i * self.stride
-            chunks.append(padded_waveform[:, s:s + self.chunk_size_samples])
+            chunk = padded_waveform[:, s:s + self.chunk_size_samples]
+            chunks.append(chunk)
         chunks_batch = jnp.stack(chunks, axis=0)
 
         separated_batch = self._compiled_batched_separate(chunks_batch)
@@ -240,21 +242,19 @@ class Separator:
         )
         separated_batch = separated_batch * fades
 
-        output = jnp.zeros((separated_batch.shape[1], separated_batch.shape[2], padded_length), dtype=jnp.float32)
+        output = jnp.zeros((4, 2, padded_length), dtype=jnp.float32)
 
-        K = separated_batch.shape[-1]
-        starts = idx * self.stride
-        time_idx = starts[:, None] + jnp.arange(K)[None, :]
-
-        updates = jnp.transpose(separated_batch, (0, 3, 1, 2))
-        dnums = lax.ScatterDimensionNumbers(
-            update_window_dims=(2, 3),
-            inserted_window_dims=(),
-            scatter_dims_to_operand_dims=(2,),
-        )
-        output = lax.scatter_add(output, time_idx[..., None], updates, dnums)
-        return output[:, :, :original_length]
-
+        def add_chunk(i, carry_output):
+            start = i * self.stride
+            chunk = separated_batch[i]
+            current_slice = lax.dynamic_slice(carry_output, (0, 0, start), chunk.shape)
+            updated_slice = current_slice + chunk
+            result = lax.dynamic_update_slice(carry_output, updated_slice, (0, 0, start))
+            return result
+        
+        output = lax.fori_loop(0, n_chunks, add_chunk, output)
+        result = output[:, :, :original_length]
+        return result
     def _reshape_input(self, waveform: jnp.ndarray) -> jnp.ndarray:
         return waveform[None, ...]
 
@@ -274,11 +274,12 @@ class Separator:
         return output.reshape(4, 2, -1)
 
     def _get_fade_in_array(self, waveform_length: int, fade_in_len: int) -> jnp.ndarray:
-        fade = jnp.linspace(0., 1., fade_in_len, dtype=self.dtype)
+        # create linspace in float32 and then case to handle nan issues
+        fade = jnp.linspace(0., 1., fade_in_len, dtype=jnp.float32).astype(self.dtype)
         ones = jnp.ones(waveform_length - fade_in_len, dtype=self.dtype)
         return jnp.concatenate((fade, ones), dtype=self.dtype)
 
     def _get_fade_out_array(self, waveform_length: int, fade_out_len: int) -> jnp.ndarray:
-        fade = jnp.linspace(1., 0., fade_out_len, dtype=self.dtype)
+        fade = jnp.linspace(1., 0., fade_out_len, dtype=jnp.float32).astype(self.dtype)
         ones = jnp.ones(waveform_length - fade_out_len, dtype=self.dtype)
         return jnp.concatenate((ones, fade), dtype=self.dtype)
