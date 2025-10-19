@@ -79,7 +79,10 @@ class Separator:
                 return outputs.astype(waveforms.dtype)
 
             self._compiled_batched_separate = partial(batched_separate_fn, model=self.model)
-            self._compiled_batched_separate(jnp.zeros((self.compile_batches, 2, self.chunk_size_samples), dtype=self.dtype))
+
+            dummy_input = jax.random.normal(jax.random.PRNGKey(0), (self.compile_batches, 2, self.chunk_size_samples), dtype=self.dtype)
+            self._compiled_batched_separate(dummy_input)
+
         else:
             @nnx.jit()
             def separate_fn(waveform: jnp.ndarray, model: HDemucs):
