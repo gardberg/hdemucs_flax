@@ -13,6 +13,7 @@ def separator():
         chunk_size=30,
         sample_rate=44100,
         overlap=0.1,
+        compile_batches=12
     )
 
 @pytest.fixture
@@ -22,7 +23,7 @@ def torch_separator():
 def test_jax_separate(separator: Separator):
     waveform, sample_rate = sf.read("testaudio_long.wav")
     waveform_n = jnp.array(waveform).transpose()
-    out = separator.separate_longform(waveform_n)
+    out = separator.separate_longform_batched(waveform_n)
 
 
 # @pytest.mark.skip(reason="Pytorch implementation is not correct")
@@ -34,7 +35,7 @@ def test_separate_longform(separator: Separator, torch_separator: TorchSeparator
     ref = waveform_n.mean(0)
     waveform_n = (waveform_n - ref.mean()) / ref.std()
 
-    out = separator.separate_longform(waveform_n) # shape (4, 2, length)
+    out = separator.separate_longform_batched(waveform_n) # shape (4, 2, length)
 
     out = out * ref.std() + ref.mean()
 
@@ -60,7 +61,7 @@ def test_separate_longform(separator: Separator, torch_separator: TorchSeparator
 def test_benchmark_separate_jax_speed(benchmark, separator: Separator):
     waveform, sample_rate = sf.read("testaudio_long.wav")
     waveform = jnp.array(waveform).transpose()
-    benchmark(separator.separate_longform, waveform)
+    benchmark(separator.separate_longform_batched, waveform)
 
 
 @pytest.mark.benchmark(group="separate")

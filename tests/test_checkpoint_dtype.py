@@ -40,7 +40,6 @@ def test_checkpoint_workflow(torch_model, dtype):
         waveform = jnp.array(waveform, dtype=dtype).transpose()
         waveform = waveform.reshape(1, 2, waveform.shape[-1])
         
-        # with intercept_methods(get_print_hook()):
         logger.info(f"Running forward pass on waveform: {waveform.shape}")
         output = loaded_model(waveform)
         
@@ -56,19 +55,11 @@ def test_checkpoint_workflow(torch_model, dtype):
         logger.info(f"Dtypes in state: {dtypes}")
         assert jnp.dtype(dtype) in dtypes
 
-        # export
         logger.info(f"Creating separator with checkpoint_dir: {checkpoint_path} and dtype: {dtype}")
         separator = Separator(checkpoint_dir=checkpoint_path, dtype=dtype)
 
-        logger.info(f"Exporting compiled separate")
-        exported_path = separator.export_compiled_separate(save_path=Path(tmpdir) / "exported")
-
-        logger.info(f"Loading compiled separate from {exported_path}")
-        new_separator = Separator(dtype=dtype)
-        new_separator.load_compiled_separate(exported_path)
-
-        logger.info(f"Running separate longform on waveform: {waveform.shape}")
+        logger.info(f"Running separate longform batched on waveform")
         waveform = waveform.reshape(2, -1)
-        _output = new_separator.separate_longform(waveform)
+        _output = separator.separate_longform_batched(waveform)
 
         logger.info(f"Output shape: {_output.shape}")

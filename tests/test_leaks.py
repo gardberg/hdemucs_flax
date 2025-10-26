@@ -43,7 +43,7 @@ def test_jit_hdemucs():
 
         
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16])
-def test_jit_separator(dtype):
+def test_jit_batched(dtype):
     checkpoint_dir = Path(f"./checkpoint_{dtype.__name__}")
 
     x = jnp.ones((2, 44100))
@@ -51,46 +51,9 @@ def test_jit_separator(dtype):
     with jax.check_tracer_leaks():
         separator = Separator(checkpoint_dir, dtype=dtype)
 
-        y = separator.separate_longform(x)
-
-
-@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16])
-def test_jit_batched(dtype):
-    checkpoint_dir = Path(f"./checkpoint_{dtype.__name__}")
-
-    x = jnp.ones((2, 44100))
-
-    with jax.check_tracer_leaks():
-        separator = Separator(checkpoint_dir, dtype=dtype, batched=True)
-
         y = separator.separate_longform_batched(x)
 
         assert jnp.isfinite(y).all()
-
-import time
-
-@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16])
-def test_jit_compare(dtype):
-    checkpoint_dir = Path(f"./checkpoint_{dtype.__name__}")
-    x = jnp.ones((2, 44100))
-
-    separator = Separator(checkpoint_dir, dtype=dtype)
-    t0 = time.time()
-    out_longform = separator.separate_longform(x)
-    t1 = time.time()
-    runtime_longform = t1 - t0
-
-    separator_batched = Separator(checkpoint_dir, dtype=dtype, batched=True)
-    t0b = time.time()
-    out_batched = separator_batched.separate_longform_batched(x)
-    t1b = time.time()
-    runtime_batched = t1b - t0b
-
-    print(f"{dtype = } longform runtime: {runtime_longform}")
-    print(f"{dtype = } batched runtime: {runtime_batched}")
-
-    assert jnp.allclose(out_longform, out_batched, atol=1e-4 if dtype==jnp.float32 else 1e-2)
-
 
 @pytest.mark.parametrize("dtype", [jnp.float16])
 def test_jit_real(dtype):
@@ -100,7 +63,7 @@ def test_jit_real(dtype):
     print(f"waveform shape: {waveform_n.shape}")
 
     checkpoint_dir = Path(f"./checkpoint_{dtype.__name__}")
-    separator = Separator(checkpoint_dir, dtype=dtype, batched=True)
+    separator = Separator(checkpoint_dir, dtype=dtype)
 
     out = separator.separate_longform_batched(waveform_n)
     print(out.shape)

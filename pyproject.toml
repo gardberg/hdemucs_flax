@@ -54,5 +54,5 @@ testpaths = [
     "tests",
 ]
 addopts = [
- "--numprocesses=auto",
+ "--numprocesses=0",
 ]

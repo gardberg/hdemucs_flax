@@ -3,7 +3,6 @@ from pathlib import Path
 import jax.numpy as jnp
 import jax
 from jax import lax
-from jax import export
 import flax.nnx as nnx
 
 from demucs import HDemucs
@@ -22,8 +21,7 @@ class Separator:
         overlap: float = 0.1,
         backend: str = None,
         dtype: jnp.dtype = jnp.float32,
-        batched: bool = False,
-        compile_batches: int = 8
+        compile_batches: int = 12
     ):
         """
         Performs chunked audio source separation.
@@ -36,14 +34,12 @@ class Separator:
         """
         self.backend = jax.default_backend() if backend is None else backend
         self.model = None
-        self._compiled_separate = None
         self._compiled_batched_separate = None
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
         self.chunk_size_samples = int(chunk_size * sample_rate)
         self.overlap_samples = int(self.chunk_size_samples * overlap)
         self.stride = self.chunk_size_samples - self.overlap_samples
-        self.batched = batched
         self.compile_batches = compile_batches
 
         self.dtype = dtype
@@ -51,12 +47,11 @@ class Separator:
         self.fade_in = self._get_fade_in_array(self.chunk_size_samples, self.overlap_samples)[None, None, :]
         self.fade_out = self._get_fade_out_array(self.chunk_size_samples, self.overlap_samples)[None, None, :]
 
-        if self.batched and compile_batches > 0:
-            min_length_samples = (compile_batches - 1) * self.stride + self.overlap_samples
-            max_length_samples = compile_batches * self.stride + self.overlap_samples - 1
-            min_length_sec = min_length_samples / sample_rate
-            max_length_sec = max_length_samples / sample_rate
-            logger.info(f"Compiling for {compile_batches} batches: audio length range {min_length_sec:.1f}s - {max_length_sec:.1f}s")
+        self.min_length_samples = (compile_batches - 1) * self.stride + self.overlap_samples
+        self.max_length_samples = compile_batches * self.stride + self.overlap_samples - 1
+        self.min_length_sec = self.min_length_samples / sample_rate
+        self.max_length_sec = self.max_length_samples / sample_rate
+        logger.info(f"Compiling for {compile_batches} batches: audio length range {self.min_length_sec:.1f}s - {self.max_length_sec:.1f}s")
 
         if checkpoint_dir is not None:
             self.load_and_compile(checkpoint_dir)
@@ -72,145 +67,17 @@ class Separator:
 
         logger.info("Compiling and warming up...")
 
-        if self.batched:
-            @nnx.jit()
-            def batched_separate_fn(waveforms: jnp.ndarray, model: HDemucs):
-                outputs = model(waveforms)
-                return outputs.astype(waveforms.dtype)
+        @nnx.jit()
+        def batched_separate_fn(waveforms: jnp.ndarray, model: HDemucs):
+            outputs = model(waveforms)
+            return outputs.astype(waveforms.dtype)
 
-            self._compiled_batched_separate = partial(batched_separate_fn, model=self.model)
+        self._compiled_batched_separate = partial(batched_separate_fn, model=self.model)
 
-            dummy_input = jax.random.normal(jax.random.PRNGKey(0), (self.compile_batches, 2, self.chunk_size_samples), dtype=self.dtype)
-            self._compiled_batched_separate(dummy_input)
+        dummy_input = jax.random.normal(jax.random.PRNGKey(0), (self.compile_batches, 2, self.chunk_size_samples), dtype=self.dtype)
+        self._compiled_batched_separate(dummy_input)
 
-        else:
-            @nnx.jit()
-            def separate_fn(waveform: jnp.ndarray, model: HDemucs):
-                return self.separate(model, waveform)
-
-            self._compiled_separate = partial(separate_fn, model=self.model)
-            self._compiled_separate(jnp.zeros((2, self.chunk_size_samples), dtype=self.dtype))
-
-        # warmup
         logger.info("JIT compilation and warmup done")
-
-
-    def export_compiled_separate(self, save_path: Union[str, Path] = None) -> Path:
-
-        # NOTE probably doesnt work with new nnx.jit usage
-
-        exported = export.export(self._compiled_separate)(
-            jax.ShapeDtypeStruct((2, self.chunk_size_samples), self.dtype))
-
-        serialized = exported.serialize()
-
-        save_name = f"compiled_separate_{self.chunk_size}_{self.backend}_{self.dtype.__name__}.bin"
-
-        if save_path is None:
-            save_path = "."
-        
-        save_path = Path(save_path)
-        save_path.mkdir(exist_ok=True)
-        
-        full_path = save_path / save_name
-        
-        with open(full_path, "wb") as f:
-            f.write(serialized)
-
-        return full_path
-   
-    def load_compiled_separate(self, path: Union[str, Path]):
-        # path: path to serialized exported fn to load
-
-        with open(path, "rb") as f:
-            serialized = f.read()
-
-        deserialized = export.deserialize(serialized)
-        self._compiled_separate = deserialized.call
-
-
-    def separate_longform(self, waveform: jnp.ndarray) -> jnp.ndarray:
-        """
-        Performs chunked audio source separation.
-
-        Args:
-            waveform: Waveform to separate. Shape: (n_channels, length)
-
-        Returns:
-            Separated waveform. Shape: (4, n_channels, length)
-        """
-        original_length = waveform.shape[1]
-        n_channels = waveform.shape[0]
-        assert n_channels == 2, f"Got invalid number of channels: {n_channels} != 2"
-
-        # run separation directly on padded input if its short enough
-        if original_length <= self.chunk_size_samples:
-            padded_waveform = jnp.pad(waveform, ((0, 0), (0, self.chunk_size_samples - original_length)))
-            separated_padded = self._compiled_separate(padded_waveform)
-            return separated_padded[:, :, :original_length]
-
-        # pad last chunk so we can process all chunks in the same way
-        total_strides = (original_length - self.overlap_samples + self.stride - 1) // self.stride
-        n_chunks = total_strides + 1 # total number of chunks
-        padded_length = (n_chunks - 1) * self.stride + self.chunk_size_samples
-        padding_amount = padded_length - original_length
-        padded_waveform = jnp.pad(waveform, ((0, 0), (0, padding_amount))) # (2, padded_length)
-
-        # output buffer
-        output_shape = (4, n_channels, padded_length)
-        init_output = jnp.zeros(output_shape, dtype=jnp.float32)
-
-        def scan_body(carry_output, i):
-            input_start_idx = i * self.stride
-            # Slice the input chunk directly from the padded waveform
-            current_chunk_input = lax.dynamic_slice(
-                padded_waveform,
-                (0, input_start_idx),
-                (n_channels, self.chunk_size_samples)
-            )
-            
-            output_start_idx = input_start_idx # Output gets placed at the same start index
-            
-            separated_chunk = self._compiled_separate(current_chunk_input)
-
-            # Apply fades based on chunk index (same logic as before)
-            separated_chunk = lax.cond(
-                i == 0,
-                lambda x: x * self.fade_out,
-                lambda x: x,
-                separated_chunk
-            )
-            separated_chunk = lax.cond(
-                i == n_chunks - 1,
-                lambda x: x * self.fade_in,
-                lambda x: x,
-                separated_chunk
-            )
-            separated_chunk = lax.cond(
-                (i > 0) & (i < n_chunks - 1),
-                lambda x: x * self.fade_in * self.fade_out,
-                lambda x: x,
-                separated_chunk
-            )
-
-            # Add faded chunk to output buffer (same logic as before)
-            output_slice = lax.dynamic_slice(
-                carry_output,
-                (0, 0, output_start_idx),
-                separated_chunk.shape
-            )
-            updated_slice = output_slice + separated_chunk
-            carry_output = lax.dynamic_update_slice(
-                carry_output,
-                updated_slice,
-                (0, 0, output_start_idx)
-            )
-            return carry_output, None
-
-        # Run the scan over the chunk indices
-        final_output, _ = lax.scan(scan_body, init_output, jnp.arange(n_chunks))
-
-        return final_output[:, :, :original_length]
 
     def separate_longform_batched(self, waveform: jnp.ndarray) -> jnp.ndarray:
         """
@@ -220,18 +87,20 @@ class Separator:
         n_channels = waveform.shape[0]
         assert n_channels == 2, f"Got invalid number of channels: {n_channels} != 2"
 
-        if original_length <= self.chunk_size_samples:
-            padded_waveform = jnp.pad(waveform, ((0, 0), (0, self.chunk_size_samples - original_length)))
-            batch = padded_waveform[None, ...]
-            separated_padded = self._compiled_batched_separate(batch)[0]
-            result = separated_padded[:, :, :original_length]
-            return result
+        max_length_samples = (self.compile_batches - 1) * self.stride + self.chunk_size_samples
 
-        total_strides = (original_length - self.overlap_samples + self.stride - 1) // self.stride
-        n_chunks = total_strides + 1
-        logger.info(f"Separating waveform of length {original_length / 44100:.0f}s using {n_chunks} chunks, each of length: {self.chunk_size}s")
+        if original_length <= max_length_samples:
+            # pad to pre-compiled length
+            padded_length = max_length_samples
+            n_chunks = self.compile_batches
+            logger.info(f"Separating waveform of length {original_length / self.sample_rate:.1f}s using {n_chunks} chunks (padded to {padded_length / self.sample_rate:.1f}s)")
+        else:
+            # just run with re-triggered compile
+            total_strides = (original_length - self.overlap_samples + self.stride - 1) // self.stride
+            n_chunks = total_strides + 1
+            padded_length = (n_chunks - 1) * self.stride + self.chunk_size_samples
+            logger.info(f"Separating waveform of length {original_length / 44100:.0f}s using {n_chunks} chunks, each of length: {self.chunk_size}s")
 
-        padded_length = (n_chunks - 1) * self.stride + self.chunk_size_samples
         padding_amount = padded_length - original_length
         padded_waveform = jnp.pad(waveform, ((0, 0), (0, padding_amount)))
 
@@ -269,23 +138,6 @@ class Separator:
         output = lax.fori_loop(0, n_chunks, add_chunk, output)
         result = output[:, :, :original_length]
         return result
-    def _reshape_input(self, waveform: jnp.ndarray) -> jnp.ndarray:
-        return waveform[None, ...]
-
-    def separate(self, model: HDemucs, waveform: jnp.ndarray) -> jnp.ndarray:
-        """
-        Args:
-            waveform: Waveform to separate. Shape: (n_channels, length)
-
-        Returns:
-            Separated waveform. Shape: (4, n_channels, length)
-        """
-
-        # explicitly use model as arg to include in jit args
-        waveform_n = self._reshape_input(waveform)
-        output = model(waveform_n)
-        output = output.astype(waveform.dtype)
-        return output.reshape(4, 2, -1)
 
     def _get_fade_in_array(self, waveform_length: int, fade_in_len: int) -> jnp.ndarray:
         # create linspace in float32 and then case to handle nan issues
